@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Windows Installer package for Disegno.
+  Built with wixl (msitools) on Linux or with WiX Toolset v3 on Windows:
+    wixl -a x64 -D Version=1.0.0 -D ExePath=dist/Disegno.exe -D IconPath=assets/disegno.ico -o Disegno.msi installer/Disegno.wxs
+  The UpgradeCode must never change: it lets new versions replace old ones.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Disegno"
+           Language="1040"
+           Codepage="1252"
+           Version="$(var.Version)"
+           Manufacturer="Disegno"
+           UpgradeCode="87B474AD-03D4-4A6E-9374-F0180DE3DB2E">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Languages="1040"
+             SummaryCodepage="1252"
+             Description="Disegno - disegna le tue foto col mouse"
+             Comments="Trasforma una foto in un disegno fatto col mouse, in qualsiasi app." />
+
+    <Media Id="1" Cabinet="disegno.cab" EmbedCab="yes" />
+
+    <MajorUpgrade DowngradeErrorMessage="È già installata una versione più recente di Disegno." />
+
+    <Icon Id="DisegnoIcon" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="DisegnoIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/BitJacker/disegno" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/BitJacker/disegno" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="Disegno">
+          <Component Id="MainExe" Guid="6ACF8BB3-665A-4553-BE96-F90BA9BD5FA5" Win64="yes">
+            <File Id="DisegnoExe" Name="Disegno.exe" Source="$(var.ExePath)" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder">
+        <Component Id="StartMenuShortcut" Guid="DB40452B-082E-4F95-9E54-0D4DF24FA38D" Win64="yes">
+          <Shortcut Id="StartMenuDisegno"
+                    Name="Disegno"
+                    Description="Disegna le tue foto col mouse, in qualsiasi app"
+                    Target="[INSTALLDIR]Disegno.exe"
+                    WorkingDirectory="INSTALLDIR"
+                    Icon="DisegnoIcon" />
+          <RegistryValue Root="HKLM" Key="Software\Disegno" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+
+      <Directory Id="DesktopFolder">
+        <Component Id="DesktopShortcut" Guid="0EA4CB80-C92F-4205-A676-2CD466F68DD5" Win64="yes">
+          <Shortcut Id="DesktopDisegno"
+                    Name="Disegno"
+                    Description="Disegna le tue foto col mouse, in qualsiasi app"
+                    Target="[INSTALLDIR]Disegno.exe"
+                    WorkingDirectory="INSTALLDIR"
+                    Icon="DisegnoIcon" />
+          <RegistryValue Root="HKLM" Key="Software\Disegno" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </Directory>
+
+    <Feature Id="Main" Title="Disegno" Level="1">
+      <ComponentRef Id="MainExe" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+  </Product>
+</Wix>

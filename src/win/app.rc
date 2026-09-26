@@ -1,0 +1,34 @@
+#pragma code_page(65001)
+#include <windows.h>
+#include "resource.h"
+
+IDI_APP ICON "../../assets/disegno.ico"
+1 24 "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION DISEGNO_VERSION_MAJOR,DISEGNO_VERSION_MINOR,DISEGNO_VERSION_PATCH,0
+ PRODUCTVERSION DISEGNO_VERSION_MAJOR,DISEGNO_VERSION_MINOR,DISEGNO_VERSION_PATCH,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041004b0"
+        BEGIN
+            VALUE "CompanyName", "Disegno"
+            VALUE "FileDescription", "Disegno - disegna le tue foto col mouse"
+            VALUE "FileVersion", DISEGNO_VERSION_STR
+            VALUE "InternalName", "Disegno"
+            VALUE "OriginalFilename", "Disegno.exe"
+            VALUE "ProductName", "Disegno"
+            VALUE "ProductVersion", DISEGNO_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x410, 1200
+    END
+END

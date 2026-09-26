@@ -1,0 +1,56 @@
+name: Build
+
+on:
+  push:
+    branches: ["main", "master", "claude/**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-app:
+    name: EXE + MSI
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compiler and MSI tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 wixl msitools cmake ninja-build
+
+      - name: Unit tests (drawing engine)
+        run: |
+          cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/linux --parallel
+          ctest --test-dir build/linux --output-on-failure
+
+      - name: Build Disegno.exe and the MSI installer
+        run: ./scripts/build.sh
+
+      - name: Check the MSI
+        run: |
+          msiinfo suminfo dist/*.msi
+          msiinfo export dist/*.msi Shortcut
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Disegno
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(sed -n 's/^project(Disegno VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          TAG="v$VERSION"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "Disegno $VERSION" --notes-file docs/release-notes.md
+          fi
