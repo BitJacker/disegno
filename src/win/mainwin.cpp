@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <cwctype>
 #include <memory>
@@ -74,6 +75,10 @@ enum : int {
     ID_STEP_UD,
     ID_FAILSAFE,
     ID_RELATIVE,
+    ID_LIMIT,
+    ID_LIMIT_SECS,
+    ID_LIMIT_UD,
+    ID_LBL_LIMIT_S,
     ID_DRAW,
     ID_HINT,
     ID_HELP,
@@ -99,27 +104,36 @@ enum : int {
 enum : UINT_PTR { TIMER_PROCESS = 1, TIMER_SAVE = 2, TIMER_SEARCH = 3 };
 
 struct SpeedPreset {
+    const char* key;
     const wchar_t* name;
     dz::Timing timing;  // stepPx, moveDelayMs, downDelayMs, upDelayMs, jiggle
 };
+// Games such as Roblox read the mouse once per frame (~16 ms): between two strokes the
+// button has to stay released for a few frames, or the game never notices the release
+// and joins every stroke to the next one with a line.
 const SpeedPreset kSpeeds[] = {
-    {L"Veloce  (Paint, Photoshop, Krita…)", {10.f, 1.f, 4.f, 4.f, false}},
-    {L"Normale", {6.f, 3.f, 10.f, 10.f, false}},
-    {L"Siti web  (skribbl, Gartic…)", {5.f, 6.f, 20.f, 20.f, false}},
-    {L"Giochi  (Roblox)", {5.f, 17.f, 40.f, 40.f, true}},
-    {L"Molto lenta  (massima sicurezza)", {3.f, 30.f, 70.f, 70.f, true}},
-    {L"Personalizzata", {6.f, 5.f, 20.f, 20.f, false}},
+    {"auto", L"Automatica  (consigliata)", {8.f, 4.f, 25.f, 25.f, false}},
+    {"fast", L"Veloce  (Paint, Photoshop, Krita…)", {10.f, 1.f, 4.f, 4.f, false}},
+    {"normal", L"Normale", {8.f, 4.f, 25.f, 25.f, false}},
+    {"web", L"Siti web  (skribbl, Gartic…)", {12.f, 8.f, 25.f, 25.f, false}},
+    {"game", L"Roblox e giochi", {24.f, 17.f, 35.f, 35.f, false}},
+    {"slow", L"Molto lenta  (massima sicurezza)", {3.f, 30.f, 70.f, 70.f, true}},
+    {"custom", L"Personalizzata", {6.f, 5.f, 20.f, 20.f, false}},
 };
 constexpr int kSpeedCount = int(sizeof kSpeeds / sizeof kSpeeds[0]);
-constexpr int kCustomSpeed = kSpeedCount - 1;
+enum : int { kAutoSpeed = 0, kFastSpeed, kNormalSpeed, kWebSpeed, kGameSpeed, kSlowSpeed, kCustomSpeed };
+static_assert(kCustomSpeed == kSpeedCount - 1, "speed list and indices out of sync");
+
+// The kind of app under the drawing area decides the automatic speed.
+enum class Target { Unknown, Paint, Browser, Roblox };
 
 const wchar_t* kStyleNames[dz::kStyleCount] = {
     L"Contorni  (veloce)",
     L"Schizzo dettagliato  (contorni + ombre)",
     L"Tratteggio  (solo ombre)",
-    L"Retino  (effetto foto, lento)",
+    L"Puntini  (dettagliatissimo, lento)",
 };
-const char* kStyleKeys[dz::kStyleCount] = {"contorni", "schizzo", "tratteggio", "retino"};
+const char* kStyleKeys[dz::kStyleCount] = {"contorni", "schizzo", "tratteggio", "puntini"};
 
 enum class Phase { Idle, Picking, Countdown, Drawing };
 enum class After { None, Draw };
@@ -153,6 +167,7 @@ struct App {
     HWND style{}, detail{}, detailVal{}, shade{}, shadeVal{}, brush{}, brushUd{}, invert{}, stretch{};
     HWND pick{}, secs{}, secsUd{}, areaInfo{}, showArea{}, testBorder{};
     HWND speed{}, delay{}, delayUd{}, step{}, stepUd{}, failsafe{}, relative{};
+    HWND limit{}, limitEdit{}, limitUd{}, lblLimitS{};
     HWND draw{}, hint{}, help{};
     HWND lblLibrary{}, lblStyle{}, lblDetail{}, lblShade{}, lblBrush{}, lblBrushPx{};
     HWND lblArea{}, lblSecs{}, lblSpeed{}, lblDelay{}, lblDelayMs{}, lblStep{}, lblStepPx{};
@@ -169,14 +184,19 @@ struct App {
     RECT area{};
     bool hasArea = false;
     dz::Params params;
-    int speedIndex = 0;
+    int speedIndex = kAutoSpeed;
+    Target target = Target::Unknown;
+    std::wstring targetName;
+    bool limitOn = false;
+    int limitSecs = 60;
     dz::Timing custom{6.f, 5.f, 20.f, 20.f, false};
     int seconds = 5;
     bool failsafeOn = true;
     bool relativeOn = false;
 
     // Processing
-    std::shared_ptr<const dz::Drawing> drawing;
+    std::shared_ptr<const dz::Drawing> drawingFull;  // everything the picture needs
+    std::shared_ptr<const dz::Drawing> drawing;      // what will be drawn (time limit applied)
     uint64_t gen = 0;
     bool procRunning = false;
     bool procPending = false;
@@ -329,14 +349,86 @@ std::wstring guessExtension(const Bytes& d) {
 // Timing / sizes
 // ---------------------------------------------------------------------------
 
+// The preset really used: "Automatica" follows the app under the drawing area.
+int effectiveSpeed() {
+    if (app.speedIndex != kAutoSpeed) return std::clamp(app.speedIndex, 0, kSpeedCount - 1);
+    switch (app.target) {
+        case Target::Roblox: return kGameSpeed;
+        case Target::Browser: return kWebSpeed;
+        case Target::Paint: return kFastSpeed;
+        default: return kNormalSpeed;
+    }
+}
+
 dz::Timing currentTiming() {
-    if (app.speedIndex == kCustomSpeed) {
+    const int s = effectiveSpeed();
+    if (s == kCustomSpeed) {
         dz::Timing t = app.custom;
-        t.downDelayMs = t.upDelayMs = std::clamp(t.moveDelayMs * 2.5f, 4.f, 150.f);
+        // Keep the button released for at least a couple of game frames between strokes.
+        t.downDelayMs = t.upDelayMs = std::clamp(t.moveDelayMs * 2.5f, 25.f, 150.f);
         t.jiggle = t.moveDelayMs >= 12.f;
         return t;
     }
-    return kSpeeds[std::clamp(app.speedIndex, 0, kSpeedCount - 1)].timing;
+    return kSpeeds[s].timing;
+}
+
+std::wstring lowerCase(std::wstring s) {
+    for (auto& c : s) c = wchar_t(towlower(c));
+    return s;
+}
+
+// Classifies the application that owns a window (by process name and title).
+Target classifyWindow(HWND h, std::wstring& label) {
+    label.clear();
+    if (!h) return Target::Unknown;
+    HWND root = GetAncestor(h, GA_ROOT);
+    if (!root) root = h;
+    wchar_t title[256] = {};
+    GetWindowTextW(root, title, 256);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(root, &pid);
+    std::wstring exe;
+    if (HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+        wchar_t buf[MAX_PATH * 2];
+        DWORD n = DWORD(std::size(buf));
+        if (QueryFullProcessImageNameW(p, 0, buf, &n)) exe.assign(buf, n);
+        CloseHandle(p);
+    }
+    const size_t slash = exe.find_last_of(L"\\/");
+    const std::wstring name = lowerCase(slash == std::wstring::npos ? exe : exe.substr(slash + 1));
+    const std::wstring t = lowerCase(title);
+    label = title[0] ? std::wstring(title) : name;
+    if (name.find(L"roblox") != std::wstring::npos || t.find(L"roblox") != std::wstring::npos) {
+        label = L"Roblox";
+        return Target::Roblox;
+    }
+    static const wchar_t* browsers[] = {L"chrome.exe",  L"msedge.exe",   L"firefox.exe",  L"opera.exe",
+                                        L"brave.exe",   L"vivaldi.exe",  L"iexplore.exe", L"arc.exe",
+                                        L"librewolf.exe", L"waterfox.exe", L"yandex.exe",  L"browser.exe",
+                                        L"opera_gx.exe", L"chromium.exe"};
+    for (const wchar_t* b : browsers)
+        if (name == b) return Target::Browser;
+    static const wchar_t* painters[] = {L"mspaint.exe",   L"paintstudio.view.exe", L"krita.exe",
+                                        L"photoshop.exe", L"paintdotnet.exe",      L"clipstudiopaint.exe",
+                                        L"sai.exe",       L"sai2.exe",             L"medibangpaintpro.exe",
+                                        L"firealpaca.exe", L"artweaver.exe",       L"mypaint.exe",
+                                        L"aseprite.exe",  L"inkscape.exe",         L"photopea.exe"};
+    for (const wchar_t* pa : painters)
+        if (name == pa) return Target::Paint;
+    if (name.rfind(L"gimp", 0) == 0 || t.find(L"paint") != std::wstring::npos) return Target::Paint;
+    return Target::Unknown;
+}
+
+// Looks at which app is under the middle of the drawing area. Returns true if it changed.
+bool detectTarget() {
+    if (!app.hasArea) return false;
+    const POINT c{(app.area.left + app.area.right) / 2, (app.area.top + app.area.bottom) / 2};
+    std::wstring label;
+    const Target t = classifyWindow(windowAt(c), label);
+    const bool changed = t != app.target || label != app.targetName;
+    app.target = t;
+    app.targetName = label;
+    return changed;
 }
 
 // Size the drawing is built for. Before an area is chosen, a sheet shaped like the photo.
@@ -381,11 +473,35 @@ void updateInfo() {
         s = L"Preparazione del disegno…";
     } else {
         const size_t n = app.drawing->strokes.size();
+        const size_t all = app.drawingFull ? app.drawingFull->strokes.size() : n;
         const double sec = dz::estimateSeconds(app.drawing->strokes, currentTiming());
-        s = wu::formatInt(static_cast<long long>(n)) + L" tratti   ·   tempo stimato " + wu::formatDuration(sec);
+        s = wu::formatInt(static_cast<long long>(n));
+        if (n < all) s += L" di " + wu::formatInt(static_cast<long long>(all));
+        s += L" tratti   ·   tempo stimato " + wu::formatDuration(sec);
+        if (n < all) s += L" (massimo " + wu::formatDuration(app.limitSecs) + L")";
+        if (app.speedIndex == kAutoSpeed) s += L"   ·   velocità: " + std::wstring(kSpeeds[effectiveSpeed()].name);
         if (!app.hasArea) s += L"   ·   scegli l'area per l'anteprima esatta";
     }
     setText(app.info, s);
+}
+
+// Applies the optional time limit to the full drawing.
+void applyTimeLimit() {
+    if (!app.drawingFull) {
+        app.drawing.reset();
+        return;
+    }
+    if (!app.limitOn) {
+        app.drawing = app.drawingFull;
+        return;
+    }
+    auto d = std::make_shared<dz::Drawing>();
+    d->width = app.drawingFull->width;
+    d->height = app.drawingFull->height;
+    d->brush = app.drawingFull->brush;
+    // Keep 10% in reserve: games can run a little slower than the estimate.
+    d->strokes = dz::fitToTime(app.drawingFull->strokes, currentTiming(), double(app.limitSecs) * 0.9);
+    app.drawing = d;
 }
 
 void updateAreaInfo() {
@@ -393,16 +509,18 @@ void updateAreaInfo() {
         setText(app.areaInfo, L"Nessuna area scelta");
     } else {
         const RECT& a = app.area;
-        setText(app.areaInfo, std::to_wstring(a.right - a.left) + L" × " + std::to_wstring(a.bottom - a.top) +
-                                  L" px   ·   angolo in (" + std::to_wstring(a.left) + L", " + std::to_wstring(a.top) +
-                                  L")");
+        std::wstring s = std::to_wstring(a.right - a.left) + L" × " + std::to_wstring(a.bottom - a.top) + L" px  ·  (" +
+                         std::to_wstring(a.left) + L", " + std::to_wstring(a.top) + L")";
+        if (!app.targetName.empty()) s += L"  ·  " + app.targetName;
+        setText(app.areaInfo, s);
     }
     EnableWindow(app.showArea, app.hasArea);
     EnableWindow(app.testBorder, app.hasArea);
 }
 
 void updateSpeedFields() {
-    const dz::Timing t = app.speedIndex == kCustomSpeed ? app.custom : kSpeeds[app.speedIndex].timing;
+    const int eff = effectiveSpeed();
+    const dz::Timing t = eff == kCustomSpeed ? app.custom : kSpeeds[eff].timing;
     app.loadingUi = true;
     SendMessageW(app.delayUd, UDM_SETPOS32, 0, LPARAM(std::lround(t.moveDelayMs)));
     SendMessageW(app.stepUd, UDM_SETPOS32, 0, LPARAM(std::lround(t.stepPx)));
@@ -435,6 +553,10 @@ void syncControls() {
     SendMessageW(app.speed, CB_SETCURSEL, WPARAM(app.speedIndex), 0);
     Button_SetCheck(app.failsafe, app.failsafeOn ? BST_CHECKED : BST_UNCHECKED);
     Button_SetCheck(app.relative, app.relativeOn ? BST_CHECKED : BST_UNCHECKED);
+    Button_SetCheck(app.limit, app.limitOn ? BST_CHECKED : BST_UNCHECKED);
+    SendMessageW(app.limitUd, UDM_SETPOS32, 0, app.limitSecs);
+    EnableWindow(app.limitEdit, app.limitOn);
+    EnableWindow(app.limitUd, app.limitOn);
     app.loadingUi = false;
     updateSpeedFields();
     updateValueLabels();
@@ -480,7 +602,21 @@ int settingInt(const char* key, int def, int lo, int hi) {
 
 void loadSettings() {
     applyImageSettings(app.lib.setting("params", "s=1;d=6;h=5;b=2;i=0;f=0"));
-    app.speedIndex = settingInt("speed", 0, 0, kSpeedCount - 1);
+    {
+        // Stored by name; very old versions stored an index (their fast default becomes "auto").
+        const std::string sp = app.lib.setting("speed", "auto");
+        app.speedIndex = kAutoSpeed;
+        if (!sp.empty() && isdigit(static_cast<unsigned char>(sp[0]))) {
+            static const int legacy[] = {kAutoSpeed, kNormalSpeed, kWebSpeed, kGameSpeed, kSlowSpeed, kCustomSpeed};
+            const int v = atoi(sp.c_str());
+            if (v >= 0 && v < 6) app.speedIndex = legacy[v];
+        } else {
+            for (int i = 0; i < kSpeedCount; ++i)
+                if (sp == kSpeeds[i].key) app.speedIndex = i;
+        }
+    }
+    app.limitOn = settingInt("limit_on", 0, 0, 1) != 0;
+    app.limitSecs = settingInt("limit_secs", 60, 5, 3600);
     app.custom.moveDelayMs = float(settingInt("custom_delay", 5, 0, 500));
     app.custom.stepPx = float(settingInt("custom_step", 6, 1, 100));
     app.seconds = settingInt("seconds", 5, 1, 30);
@@ -500,7 +636,9 @@ void saveSettingsNow() {
     if (!app.lib.isOpen()) return;
     app.lib.begin();
     app.lib.setSetting("params", imageSettingsString());
-    app.lib.setSetting("speed", std::to_string(app.speedIndex));
+    app.lib.setSetting("speed", kSpeeds[app.speedIndex].key);
+    app.lib.setSetting("limit_on", app.limitOn ? "1" : "0");
+    app.lib.setSetting("limit_secs", std::to_string(app.limitSecs));
     app.lib.setSetting("custom_delay", std::to_string(int(std::lround(app.custom.moveDelayMs))));
     app.lib.setSetting("custom_step", std::to_string(int(std::lround(app.custom.stepPx))));
     app.lib.setSetting("seconds", std::to_string(app.seconds));
@@ -551,6 +689,7 @@ DWORD WINAPI procThread(LPVOID arg) {
 void startProcess() {
     KillTimer(app.hwnd, TIMER_PROCESS);
     if (!app.gray) {
+        app.drawingFull.reset();
         app.drawing.reset();
         updatePreview();
         updateInfo();
@@ -592,7 +731,10 @@ void beginCountdown(bool border);
 void onProcessed(uint64_t gen, dz::Drawing* d) {
     std::unique_ptr<dz::Drawing> result(d);
     app.procRunning = false;
-    if (gen == app.gen && result) app.drawing = std::shared_ptr<const dz::Drawing>(result.release());
+    if (gen == app.gen && result) {
+        app.drawingFull = std::shared_ptr<const dz::Drawing>(result.release());
+        applyTimeLimit();
+    }
     if (app.procPending) {
         app.procPending = false;
         startProcess();
@@ -691,6 +833,7 @@ void clearCurrentImage() {
     app.currentName.clear();
     app.gray.reset();
     app.photo.reset();
+    app.drawingFull.reset();
     app.drawing.reset();
     SetWindowTextW(app.hwnd, kAppTitle);
     updatePreview();
@@ -707,6 +850,7 @@ void setImage(int64_t id, const dz::Rgba& rgba, const std::wstring& name) {
         pp < 1 ? dz::resize(work, std::max(1, int(work.w * pp + 0.5)), std::max(1, int(work.h * pp + 0.5))) : work);
     app.currentId = id;
     app.currentName = name;
+    app.drawingFull.reset();
     app.drawing.reset();
     const std::string st = app.lib.imageSettings(id);
     if (!st.empty()) {
@@ -849,10 +993,16 @@ void onAreaPicked(bool ok, RECT* r) {
     }
     app.area = *rect;
     app.hasArea = true;
+    detectTarget();
     updateAreaInfo();
+    updateSpeedFields();
     saveSettingsLater();
-    setStatus(L"Area scelta: " + std::to_wstring(rect->right - rect->left) + L" × " +
-              std::to_wstring(rect->bottom - rect->top) + L" px. Ora premi DISEGNA.");
+    std::wstring msg = L"Area scelta: " + std::to_wstring(rect->right - rect->left) + L" × " +
+                       std::to_wstring(rect->bottom - rect->top) + L" px";
+    if (app.speedIndex == kAutoSpeed && app.target != Target::Unknown)
+        msg += L", in " + app.targetName + L" (velocità «" + kSpeeds[effectiveSpeed()].name + L"»)";
+    setStatus(msg + L". Ora premi DISEGNA.");
+    app.drawingFull.reset();
     app.drawing.reset();
     updatePreview();
     startProcess();
@@ -868,12 +1018,22 @@ std::vector<dz::Stroke> borderStrokes() {
 
 void beginCountdown(bool border) {
     if (app.phase != Phase::Idle || !app.hasArea) return;
+    if (!border && !app.drawing) return;
+    if (detectTarget()) {
+        // Another app is under the area now: the automatic speed (and time limit) may change.
+        applyTimeLimit();
+        updateAreaInfo();
+        updateSpeedFields();
+        updatePreview();
+        updateInfo();
+    }
     app.jobIsBorder = border;
     app.jobImageId = app.currentId;
     app.jobStrokes = border ? borderStrokes() : app.drawing->strokes;
     app.drawEstimate = dz::estimateSeconds(app.jobStrokes, currentTiming());
     setPhase(Phase::Countdown);
-    setStatus(L"Il disegno parte tra " + std::to_wstring(app.seconds) + L" secondi…");
+    setStatus(L"Il disegno parte tra " + std::to_wstring(app.seconds) + L" secondi (velocità «" +
+              kSpeeds[effectiveSpeed()].name + L"»)…");
     // Give focus to the app under the area while we are still allowed to, then get out of the way.
     POINT c{(app.area.left + app.area.right) / 2, (app.area.top + app.area.bottom) / 2};
     if (HWND target = windowAt(c)) SetForegroundWindow(target);
@@ -1018,9 +1178,11 @@ void showHelp() {
         L"ESC = ferma subito      F8 = pausa / riprendi\n"
         L"F5 = disegna      F6 = seleziona area      Ctrl+V = incolla foto\n\n"
         L"CONSIGLI\n"
-        L"•  Paint: velocità «Veloce», spessore 1–2 px.\n"
-        L"•  Roblox e altri giochi: velocità «Giochi», stile Contorni o poco dettaglio; imposta lo "
-        L"spessore uguale al pennello del gioco.\n"
+        L"•  La velocità «Automatica» riconosce Paint, i browser e Roblox e sceglie i tempi giusti.\n"
+        L"•  Roblox e altri giochi leggono il mouse una volta per fotogramma: usa «Roblox e giochi» "
+        L"(o «Automatica»), stile Contorni o poco dettaglio, e lo spessore uguale al pennello del gioco.\n"
+        L"•  Giochi a tempo: attiva «Tempo massimo» e Disegno toglie i tratti meno importanti per "
+        L"finire in tempo.\n"
         L"•  Se un gioco ignora il mouse prova «Movimento relativo».\n"
         L"•  Se l'app di disegno è avviata come amministratore, avvia anche Disegno come amministratore.");
 }
@@ -1067,65 +1229,69 @@ void layout() {
     // Right: settings
     {
         const int rx = W - app.rightW + pad, rw = app.rightW - 2 * pad;
-        int y = top + S(12);
+        int y = top + S(10);
         put(app.lblStyle, rx, y, rw, S(18));
-        y += S(22);
+        y += S(20);
         put(app.style, rx, y, rw, S(300));
-        y += S(32);
-        const int lw = S(76), vw = S(26);
-        put(app.lblDetail, rx, y + S(5), lw, S(20));
-        put(app.detail, rx + lw, y, rw - lw - vw, S(28));
-        put(app.detailVal, rx + rw - vw, y + S(5), vw, S(20));
         y += S(30);
-        put(app.lblShade, rx, y + S(5), lw, S(20));
-        put(app.shade, rx + lw, y, rw - lw - vw, S(28));
-        put(app.shadeVal, rx + rw - vw, y + S(5), vw, S(20));
-        y += S(32);
+        const int lw = S(76), vw = S(26);
+        put(app.lblDetail, rx, y + S(4), lw, S(20));
+        put(app.detail, rx + lw, y, rw - lw - vw, S(26));
+        put(app.detailVal, rx + rw - vw, y + S(4), vw, S(20));
+        y += S(28);
+        put(app.lblShade, rx, y + S(4), lw, S(20));
+        put(app.shade, rx + lw, y, rw - lw - vw, S(26));
+        put(app.shadeVal, rx + rw - vw, y + S(4), vw, S(20));
+        y += S(30);
         put(app.lblBrush, rx, y + S(4), S(150), S(20));
         put(app.brush, rx + S(152), y, S(64), S(24));
         put(app.lblBrushPx, rx + S(222), y + S(4), S(30), S(20));
-        y += S(30);
+        y += S(28);
         put(app.invert, rx, y, rw / 2, S(22));
         put(app.stretch, rx + rw / 2, y, rw - rw / 2, S(22));
-        y += S(30);
+        y += S(26);
         app.sepY[0] = y;
-        y += S(12);
+        y += S(10);
 
         put(app.lblArea, rx, y, rw, S(18));
-        y += S(22);
-        put(app.pick, rx, y, rw - S(96), S(32));
-        put(app.secs, rx + rw - S(88), y + S(4), S(58), S(24));
-        put(app.lblSecs, rx + rw - S(26), y + S(8), S(26), S(20));
-        y += S(38);
+        y += S(20);
+        put(app.pick, rx, y, rw - S(96), S(30));
+        put(app.secs, rx + rw - S(88), y + S(3), S(58), S(24));
+        put(app.lblSecs, rx + rw - S(26), y + S(7), S(26), S(20));
+        y += S(34);
         put(app.areaInfo, rx, y, rw, S(20));
-        y += S(24);
+        y += S(22);
         int bw = (rw - S(6)) / 2;
-        put(app.showArea, rx, y, bw, S(28));
-        put(app.testBorder, rx + bw + S(6), y, rw - bw - S(6), S(28));
-        y += S(36);
+        put(app.showArea, rx, y, bw, S(26));
+        put(app.testBorder, rx + bw + S(6), y, rw - bw - S(6), S(26));
+        y += S(32);
         app.sepY[1] = y;
-        y += S(12);
+        y += S(10);
 
         put(app.lblSpeed, rx, y, rw, S(18));
-        y += S(22);
+        y += S(20);
         put(app.speed, rx, y, rw, S(300));
-        y += S(32);
+        y += S(30);
         put(app.lblDelay, rx, y + S(4), S(54), S(20));
         put(app.delay, rx + S(56), y, S(60), S(24));
         put(app.lblDelayMs, rx + S(120), y + S(4), S(26), S(20));
         put(app.lblStep, rx + S(156), y + S(4), S(48), S(20));
         put(app.step, rx + S(206), y, S(60), S(24));
         put(app.lblStepPx, rx + S(270), y + S(4), S(24), S(20));
-        y += S(30);
+        y += S(28);
+        put(app.limit, rx, y + S(1), S(118), S(22));
+        put(app.limitEdit, rx + S(120), y, S(62), S(24));
+        put(app.lblLimitS, rx + S(188), y + S(4), rw - S(188), S(20));
+        y += S(28);
         put(app.failsafe, rx, y, rw, S(22));
-        y += S(24);
+        y += S(22);
         put(app.relative, rx, y, rw, S(22));
-        y += S(34);
+        y += S(28);
 
-        const int drawH = S(50);
-        int dy = std::max(y, bottom - pad - S(22) - drawH);
+        const int drawH = S(46);
+        int dy = std::max(y, bottom - pad - S(20) - drawH);
         put(app.draw, rx, dy, rw, drawH);
-        put(app.hint, rx, dy + drawH + S(4), rw, S(18));
+        put(app.hint, rx, dy + drawH + S(3), rw, S(18));
     }
 
     // Centre: preview + info line
@@ -1137,7 +1303,8 @@ void layout() {
     EndDeferWindowPos(dw);
     // Up-down controls follow their buddies only when re-attached.
     for (auto [ud, buddy] : {std::pair{app.brushUd, app.brush}, std::pair{app.secsUd, app.secs},
-                             std::pair{app.delayUd, app.delay}, std::pair{app.stepUd, app.step}})
+                             std::pair{app.delayUd, app.delay}, std::pair{app.stepUd, app.step},
+                             std::pair{app.limitUd, app.limitEdit}})
         SendMessageW(ud, UDM_SETBUDDY, reinterpret_cast<WPARAM>(buddy), 0);
     InvalidateRect(app.hwnd, nullptr, FALSE);
 }
@@ -1355,6 +1522,10 @@ void createControls() {
                            ID_FAILSAFE);
     app.relative = makeCtl(L"BUTTON", L"Movimento relativo (per giochi difficili)", BS_AUTOCHECKBOX | WS_TABSTOP,
                            ID_RELATIVE);
+    app.limit = makeCtl(L"BUTTON", L"Tempo massimo", BS_AUTOCHECKBOX | WS_TABSTOP, ID_LIMIT);
+    app.limitEdit = makeCtl(L"EDIT", L"60", ES_NUMBER | WS_TABSTOP, ID_LIMIT_SECS, WS_EX_CLIENTEDGE);
+    app.limitUd = makeUpDown(ID_LIMIT_UD, app.limitEdit, 5, 3600, 60);
+    app.lblLimitS = makeLabel(L"s  (giochi a tempo)", ID_LBL_LIMIT_S);
 
     app.draw = makeCtl(L"BUTTON", L"DISEGNA", BS_OWNERDRAW | WS_TABSTOP, ID_DRAW);
     app.hint = makeLabel(L"ESC = ferma   ·   F8 = pausa / riprendi", ID_HINT, SS_CENTER);
@@ -1365,7 +1536,7 @@ void createControls() {
     addTip(app.list, L"Tutte le foto che hai usato. Clicca per riusarla; tasto destro per rinominare, esportare "
                      L"o eliminare.");
     addTip(app.style, L"Contorni: solo le linee principali, il più veloce.\nSchizzo dettagliato: linee e ombre a "
-                      L"tratteggio.\nTratteggio: solo ombre, come un'incisione.\nRetino: puntini riga per riga, il "
+                      L"tratteggio.\nTratteggio: solo ombre, come un'incisione.\nPuntini: puntini riga per riga, il "
                       L"più simile alla foto ma il più lento.");
     addTip(app.detail, L"Più dettaglio = più linee e più precisione, ma serve più tempo.");
     addTip(app.shade, L"Quanto sono ampie e scure le ombre (0 = nessuna ombra).");
@@ -1378,14 +1549,19 @@ void createControls() {
     addTip(app.secs, L"Secondi di attesa per ogni angolo e prima di iniziare a disegnare.");
     addTip(app.showArea, L"Mostra sullo schermo l'area scelta.");
     addTip(app.testBorder, L"Disegna solo il contorno dell'area: utile per controllare che sia quella giusta.");
-    addTip(app.speed, L"«Veloce» va bene per Paint e i programmi di disegno. Giochi (Roblox) e siti web leggono il "
-                      L"mouse più lentamente: con le velocità più basse non perdono pezzi.");
+    addTip(app.speed, L"«Automatica» riconosce l'app sotto l'area (Paint, browser, Roblox) e sceglie i tempi giusti.\n"
+                      L"Roblox e molti giochi leggono il mouse una volta per fotogramma: se il tasto viene lasciato "
+                      L"e ripremuto troppo in fretta non se ne accorgono e uniscono i tratti con delle righe. Con "
+                      L"«Roblox e giochi» il tasto resta alzato abbastanza a lungo.");
     addTip(app.delay, L"Pausa dopo ogni movimento del mouse mentre disegna (solo «Personalizzata»).");
     addTip(app.step, L"Distanza massima tra due posizioni del mouse lungo una linea (solo «Personalizzata»).");
     addTip(app.failsafe, L"Se muovi il mouse mentre disegna, Disegno si ferma subito.");
     addTip(app.relative, L"Muove il mouse con spostamenti relativi, come un mouse vero. Prova se un gioco non "
                          L"disegna niente.");
     addTip(app.draw, L"Parte dopo il conto alla rovescia (F5). ESC per fermare, F8 per mettere in pausa.");
+    addTip(app.limit, L"Se il disegno richiede più tempo, Disegno toglie i tratti meno importanti (prima i pezzettini "
+                      L"e le ombre, poi il resto) così finisce entro i secondi indicati. Utile nei giochi a tempo.");
+    addTip(app.limitEdit, L"Secondi a disposizione per il disegno.");
 }
 
 // ---------------------------------------------------------------------------
@@ -1433,6 +1609,10 @@ void onCommand(int id, int code, HWND ctl) {
             if (code == CBN_SELCHANGE && !app.loadingUi) {
                 app.speedIndex = std::clamp(int(SendMessageW(app.speed, CB_GETCURSEL, 0, 0)), 0, kSpeedCount - 1);
                 updateSpeedFields();
+                if (app.limitOn) {
+                    applyTimeLimit();
+                    updatePreview();
+                }
                 updateInfo();
                 saveSettingsLater();
             }
@@ -1458,6 +1638,10 @@ void onCommand(int id, int code, HWND ctl) {
             if (code == EN_CHANGE && !app.loadingUi && app.speedIndex == kCustomSpeed) {
                 app.custom.moveDelayMs = float(std::clamp(getInt(app.delay, 5), 0, 500));
                 app.custom.stepPx = float(std::clamp(getInt(app.step, 6), 1, 100));
+                if (app.limitOn) {
+                    applyTimeLimit();
+                    updatePreview();
+                }
                 updateInfo();
                 saveSettingsLater();
             }
@@ -1475,6 +1659,26 @@ void onCommand(int id, int code, HWND ctl) {
         case ID_FAILSAFE:
             app.failsafeOn = Button_GetCheck(app.failsafe) == BST_CHECKED;
             saveSettingsLater();
+            break;
+        case ID_LIMIT:
+            app.limitOn = Button_GetCheck(app.limit) == BST_CHECKED;
+            EnableWindow(app.limitEdit, app.limitOn);
+            EnableWindow(app.limitUd, app.limitOn);
+            applyTimeLimit();
+            updatePreview();
+            updateInfo();
+            saveSettingsLater();
+            break;
+        case ID_LIMIT_SECS:
+            if (code == EN_CHANGE && !app.loadingUi) {
+                app.limitSecs = std::clamp(getInt(app.limitEdit, 60), 5, 3600);
+                if (app.limitOn) {
+                    applyTimeLimit();
+                    updatePreview();
+                    updateInfo();
+                }
+                saveSettingsLater();
+            }
             break;
         case ID_RELATIVE:
             app.relativeOn = Button_GetCheck(app.relative) == BST_CHECKED;
@@ -1603,7 +1807,7 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_GETMINMAXINFO: {
             auto* mm = reinterpret_cast<MINMAXINFO*>(lp);
             mm->ptMinTrackSize.x = S(1000);
-            mm->ptMinTrackSize.y = S(640);
+            mm->ptMinTrackSize.y = S(660);
             return 0;
         }
         case WM_DPICHANGED: {
@@ -1776,6 +1980,7 @@ int runMainWindow(HINSTANCE inst, int showCmd) {
         SetWindowPos(hwnd, nullptr, wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top - h) / 2, w,
                      h, SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    detectTarget();
     syncControls();
     ShowWindow(hwnd, maximized ? SW_SHOWMAXIMIZED : showCmd);
     UpdateWindow(hwnd);

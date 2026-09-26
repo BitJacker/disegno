@@ -1,5 +1,15 @@
 ## Disegno
 
+### Novità della 1.1
+
+- **Roblox e giochi**: il tasto del mouse ora resta alzato per qualche fotogramma tra un
+  tratto e l'altro, così il gioco vede ogni rilascio e non unisce più i tratti con righe.
+- **Velocità «Automatica»** (consigliata): riconosce l'app sotto l'area scelta (Paint,
+  browser, Roblox) e usa da sola i tempi giusti.
+- **Tempo massimo**: per i giochi a tempo. Se il disegno ci metterebbe di più, tiene i
+  contorni principali e toglie prima i pezzettini e le ombre.
+- Lo stile a puntini ora si chiama **Puntini (dettagliatissimo)**.
+
 Trasforma una foto in un disegno e lo disegna da solo col mouse, in qualsiasi app
 (Paint, Photoshop, Krita, siti web, Roblox…).
 

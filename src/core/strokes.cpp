@@ -219,20 +219,55 @@ int movesForSegment(float len, float stepPx) {
     return std::max(1, int(std::ceil(len / stepPx)));
 }
 
-double estimateSeconds(const std::vector<Stroke>& strokes, const Timing& t) {
+double strokeSeconds(const Stroke& s, const Timing& t) {
+    if (s.pts.empty()) return 0;
     const double evt = 0.05;  // rough cost of one injected event, ms
-    double ms = 0;
-    for (const Stroke& s : strokes) {
-        if (s.pts.empty()) continue;
-        ms += evt + t.downDelayMs;                           // travel + settle
-        if (t.jiggle) ms += 2 * (evt + t.moveDelayMs);       // wiggle
-        ms += evt + t.downDelayMs;                           // press
-        if (s.pts.size() == 1) ms += 2 * (evt + t.moveDelayMs);  // dot nudge
-        for (size_t i = 1; i < s.pts.size(); ++i)
-            ms += movesForSegment(dist(s.pts[i - 1], s.pts[i]), t.stepPx) * (evt + t.moveDelayMs);
-        ms += t.upDelayMs + evt + t.upDelayMs;               // release
-    }
+    double ms = evt + t.downDelayMs;                          // travel + settle
+    if (t.jiggle) ms += 2 * (evt + t.moveDelayMs);            // wiggle
+    ms += evt + t.downDelayMs;                                // press
+    if (s.pts.size() == 1) ms += 2 * (evt + t.moveDelayMs);   // dot nudge
+    for (size_t i = 1; i < s.pts.size(); ++i)
+        ms += movesForSegment(dist(s.pts[i - 1], s.pts[i]), t.stepPx) * (evt + t.moveDelayMs);
+    ms += t.upDelayMs + evt + t.upDelayMs;                    // release
     return ms / 1000.0;
+}
+
+double estimateSeconds(const std::vector<Stroke>& strokes, const Timing& t) {
+    double sec = 0;
+    for (const Stroke& s : strokes) sec += strokeSeconds(s, t);
+    return sec;
+}
+
+std::vector<Stroke> fitToTime(const std::vector<Stroke>& strokes, const Timing& t, double seconds) {
+    std::vector<double> cost(strokes.size());
+    double total = 0;
+    for (size_t i = 0; i < strokes.size(); ++i) total += cost[i] = strokeSeconds(strokes[i], t);
+    if (total <= seconds) return strokes;
+
+    // Outlines carry the picture, so every outline goes before any shading pass (lighter
+    // passes before darker ones). Within a pass, strokes that draw the most line per
+    // second of drawing come first, so tiny crumbs are the first to go.
+    std::vector<size_t> idx(strokes.size());
+    std::vector<double> value(strokes.size());
+    for (size_t i = 0; i < strokes.size(); ++i) {
+        idx[i] = i;
+        value[i] = (1.0 + strokeLength(strokes[i])) / std::max(cost[i], 1e-6);
+    }
+    std::stable_sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
+        if (strokes[a].layer != strokes[b].layer) return strokes[a].layer < strokes[b].layer;
+        return value[a] > value[b];
+    });
+    std::vector<uint8_t> keep(strokes.size(), 0);
+    double used = 0;
+    for (size_t i : idx) {
+        if (used + cost[i] > seconds) continue;
+        used += cost[i];
+        keep[i] = 1;
+    }
+    std::vector<Stroke> out;
+    for (size_t i = 0; i < strokes.size(); ++i)
+        if (keep[i]) out.push_back(strokes[i]);
+    return out;
 }
 
 }  // namespace dz

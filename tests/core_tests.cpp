@@ -97,6 +97,42 @@ void testTiming() {
     dz::Timing fast{10, 1, 2, 2, false}, slow{5, 17, 40, 40, true};
     double a = dz::estimateSeconds(one, fast), b = dz::estimateSeconds(one, slow);
     CHECK(a > 0 && b > a);
+    CHECK(near(float(dz::strokeSeconds(one[0], slow)), float(b)));
+}
+
+void testFitToTime() {
+    // One long outline, many tiny shading crumbs: the outline must survive the cut.
+    std::vector<dz::Stroke> s;
+    dz::Stroke longLine;
+    longLine.pts = {{0, 0}, {300, 0}};
+    longLine.layer = 0;
+    for (int i = 0; i < 50; ++i) {
+        dz::Stroke crumb;
+        crumb.pts = {{float(i * 5), 50}, {float(i * 5 + 2), 50}};
+        crumb.layer = 2;
+        s.push_back(crumb);
+    }
+    s.insert(s.begin() + 25, longLine);
+    dz::Timing game{24, 17, 35, 35, false};
+    const double all = dz::estimateSeconds(s, game);
+    const double budget = all / 4;
+    std::vector<dz::Stroke> fit = dz::fitToTime(s, game, budget);
+    CHECK(!fit.empty() && fit.size() < s.size());
+    CHECK(dz::estimateSeconds(fit, game) <= budget + 1e-9);
+    bool hasLong = false;
+    for (const auto& st : fit) hasLong |= st.layer == 0;
+    CHECK(hasLong);
+    // Order is preserved: kept crumbs stay in increasing x.
+    float lastX = -1;
+    bool ordered = true;
+    for (const auto& st : fit)
+        if (st.layer == 2) {
+            if (st.pts[0].x < lastX) ordered = false;
+            lastX = st.pts[0].x;
+        }
+    CHECK(ordered);
+    // A generous budget keeps everything.
+    CHECK(dz::fitToTime(s, game, all + 1).size() == s.size());
 }
 
 void testResizeAndOrientation() {
@@ -187,6 +223,7 @@ int main() {
     testSimplify();
     testOrderAndJoin();
     testTiming();
+    testFitToTime();
     testResizeAndOrientation();
     testPipeline();
     testRender();

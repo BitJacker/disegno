@@ -52,6 +52,12 @@ void joinStrokes(std::vector<Stroke>& strokes, float maxGap);
 // Number of mouse moves the engine sends for a pressed segment of length len.
 int movesForSegment(float len, float stepPx);
 
+// Time needed to draw one stroke / all strokes with the given timing, in seconds.
+double strokeSeconds(const Stroke& s, const Timing& t);
 double estimateSeconds(const std::vector<Stroke>& strokes, const Timing& t);
+
+// Keeps the most important strokes so that drawing takes at most `seconds`: outlines before
+// shading, and long lines before short ones. The drawing order of the kept strokes is kept.
+std::vector<Stroke> fitToTime(const std::vector<Stroke>& strokes, const Timing& t, double seconds);
 
 }  // namespace dz

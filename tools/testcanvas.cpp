@@ -1,8 +1,11 @@
 // Minimal "Paint"-like canvas for automated tests: draws 1px black lines while the left
 // button is held, and saves the canvas as a BMP once a second (and on exit).
 //
-//   testcanvas.exe out.bmp [x y width height]
+//   testcanvas.exe out.bmp [x y width height [poll|events] [window title]]
 // Writes the client area position to out.bmp.txt as "left top width height".
+// With "poll" it behaves like a game (e.g. Roblox): instead of handling every mouse
+// message it looks at the cursor and the button once per frame (16 ms) and joins the
+// positions it sees while the button is down.
 #ifndef UNICODE
 #define UNICODE
 #endif
@@ -21,6 +24,8 @@ bool g_down = false, g_dirty = false;
 POINT g_last{};
 std::wstring g_out = L"canvas.bmp";
 long g_moves = 0, g_presses = 0;
+bool g_poll = false;
+bool g_pollDown = false;
 
 void save() {
     BITMAPINFOHEADER bi{};
@@ -73,9 +78,11 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             FillRect(g_mem, &r, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
             SelectObject(g_mem, GetStockObject(BLACK_PEN));
             SetTimer(hwnd, 1, 1000, nullptr);
+            if (g_poll) SetTimer(hwnd, 2, 16, nullptr);
             return 0;
         }
         case WM_LBUTTONDOWN:
+            if (g_poll) return 0;
             SetCapture(hwnd);
             g_down = true;
             ++g_presses;
@@ -85,19 +92,42 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         case WM_MOUSEMOVE:
-            if (g_down && (wp & MK_LBUTTON)) {
+            if (!g_poll && g_down && (wp & MK_LBUTTON)) {
                 ++g_moves;
                 lineTo(POINT{short(LOWORD(lp)), short(HIWORD(lp))});
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
         case WM_LBUTTONUP:
+            if (g_poll) return 0;
             if (g_down) lineTo(POINT{short(LOWORD(lp)), short(HIWORD(lp))});
             g_down = false;
             ReleaseCapture();
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         case WM_TIMER:
+            if (wp == 2) {
+                // One "game frame": sample the cursor and the button state.
+                POINT p;
+                GetCursorPos(&p);
+                ScreenToClient(hwnd, &p);
+                const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+                const bool inside = p.x >= 0 && p.y >= 0 && p.x < g_w && p.y < g_h;
+                if (down && !g_pollDown && inside) {
+                    ++g_presses;
+                    g_last = p;
+                    SetPixel(g_mem, p.x, p.y, RGB(0, 0, 0));
+                    g_dirty = true;
+                    g_pollDown = true;
+                } else if (down && g_pollDown) {
+                    ++g_moves;
+                    lineTo(p);
+                } else if (!down) {
+                    g_pollDown = false;
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (g_dirty) save();
             return 0;
         case WM_PAINT: {
@@ -129,6 +159,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         g_w = _wtoi(argv[4]);
         g_h = _wtoi(argv[5]);
     }
+    if (argc > 6 && lstrcmpiW(argv[6], L"poll") == 0) g_poll = true;
+    const wchar_t* title = argc > 7 ? argv[7] : L"TestCanvas";
     WNDCLASSW wc{};
     wc.lpfnWndProc = proc;
     wc.hInstance = inst;
@@ -138,7 +170,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     RECT r{0, 0, g_w, g_h};
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
     AdjustWindowRect(&r, style, FALSE);
-    HWND hwnd = CreateWindowW(L"TestCanvas", L"TestCanvas", style, x, y, r.right - r.left, r.bottom - r.top, nullptr,
+    HWND hwnd = CreateWindowW(L"TestCanvas", title, style, x, y, r.right - r.left, r.bottom - r.top, nullptr,
                               nullptr, inst, nullptr);
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
