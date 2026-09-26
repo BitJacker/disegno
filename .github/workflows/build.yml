@@ -42,8 +42,10 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+      # Published on pushes to main/master or tags, or when the workflow is started by hand
+      # (Actions -> Build -> Run workflow).
       - name: Publish release
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')))
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

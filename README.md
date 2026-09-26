@@ -15,7 +15,9 @@ Questo disegno è stato fatto interamente dal mouse, guidato da Disegno:
 
 ## Scarica
 
-Nella pagina **[Releases](https://github.com/BitJacker/disegno/releases)** trovi due file:
+Nella pagina **[Releases](https://github.com/BitJacker/disegno/releases)** trovi due file
+(li trovi anche in **[Actions](https://github.com/BitJacker/disegno/actions)** → l'ultimo
+*Build* → allegato «Disegno»):
 
 | File | Cos'è |
 |---|---|
@@ -151,7 +153,7 @@ cmake -S . -B build/linux -G Ninja && cmake --build build/linux && ctest --test-
 
 Su Windows si può compilare con Visual Studio (CMake) o MSYS2/MinGW. La GitHub Action in
 `.github/workflows/build.yml` compila e allega exe e MSI a ogni push; sul ramo `main`
-pubblica anche la release.
+(o avviandola a mano da *Actions → Build → Run workflow*) pubblica anche la release.
 
 Librerie incluse: [SQLite](https://sqlite.org) (pubblico dominio) e
 [stb_image / stb_image_write](https://github.com/nothings/stb) (pubblico dominio / MIT).
