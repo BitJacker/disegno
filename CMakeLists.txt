@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Disegno VERSION 1.1.0 LANGUAGES C CXX)
+project(Disegno VERSION 1.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,7 +12,8 @@ add_library(dzcore STATIC
   src/core/image.cpp
   src/core/strokes.cpp
   src/core/pipeline.cpp
-  src/core/render.cpp)
+  src/core/render.cpp
+  src/core/simulate.cpp)
 target_include_directories(dzcore PUBLIC src)
 
 if(WIN32)
@@ -53,6 +54,7 @@ if(WIN32)
   # Small Win32 canvas used by the automated end-to-end test.
   add_executable(testcanvas WIN32 tools/testcanvas.cpp)
   target_compile_definitions(testcanvas PRIVATE UNICODE _UNICODE)
+  target_link_libraries(testcanvas PRIVATE winmm)
   if(MINGW)
     target_link_options(testcanvas PRIVATE -municode -static -static-libgcc -static-libstdc++ -s)
   endif()

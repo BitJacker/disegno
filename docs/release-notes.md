@@ -1,5 +1,23 @@
 ## Disegno
 
+### Novità della 1.2
+
+- **Molto più veloce nei giochi**: in un round da 5 minuti ci sta un disegno dettagliato.
+  Un ritratto «Schizzo dettagliato» a dettaglio 6 che su Roblox richiedeva più di 11 minuti
+  ora ne richiede meno di 2; anche al dettaglio massimo ne bastano 3.
+- **Niente righe che uniscono i tratti**: dopo ogni clic e ogni rilascio Disegno aspetta che
+  il gioco li abbia visti, anche se il gioco si blocca per un attimo. Il mouse va da un
+  angolo all'altro e resta fermo su ognuno circa due fotogrammi, così un fotogramma perso
+  non taglia le curve.
+- Nuovo stile **Righe**: la foto fatta di righe orizzontali, come una stampa. Nei giochi a
+  tempo è il più dettagliato.
+- **Tempo massimo più furbo**: invece di togliere pezzi, abbassa il dettaglio quanto basta
+  per finire in tempo (per un round da 5 minuti scrivi 300).
+- Nuova velocità **Giochi lenti o che scattano**, per giochi sotto i 45 fps.
+- Contorni più puliti: una sola linea al centro dei tratti invece di due bordi, con meno
+  pezzettini.
+- Con *Puntini* e poco tempo, i puntini vengono ingranditi da soli per usare tutto il tempo.
+
 ### Novità della 1.1
 
 - **Roblox e giochi**: il tasto del mouse ora resta alzato per qualche fotogramma tra un

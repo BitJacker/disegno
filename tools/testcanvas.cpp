@@ -1,19 +1,27 @@
 // Minimal "Paint"-like canvas for automated tests: draws 1px black lines while the left
 // button is held, and saves the canvas as a BMP once a second (and on exit).
 //
-//   testcanvas.exe out.bmp [x y width height [poll|events] [window title]]
+//   testcanvas.exe out.bmp [x y width height [poll[:fps[:jitter[:hitch[:frames]]]]|events] [title]]
 // Writes the client area position to out.bmp.txt as "left top width height".
-// With "poll" it behaves like a game (e.g. Roblox): instead of handling every mouse
-// message it looks at the cursor and the button once per frame (16 ms) and joins the
-// positions it sees while the button is down.
+// With "poll" it behaves like a game (e.g. Roblox): a loop that, once per frame (60 fps
+// unless given), takes the window messages, looks at the cursor and the button, and joins
+// the positions it sees while the button is down. `jitter` makes every frame up to that
+// fraction longer and `hitch` is the chance of a frame 1..`frames` frames late (2 unless
+// given), like a game that stutters; meanwhile no message is taken, as in a real game.
+// Every frame is logged to out.bmp.frames ("ms x y down").
 #ifndef UNICODE
 #define UNICODE
 #endif
 #include <windows.h>
 
+#include <mmsystem.h>
+
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -26,6 +34,29 @@ std::wstring g_out = L"canvas.bmp";
 long g_moves = 0, g_presses = 0;
 bool g_poll = false;
 bool g_pollDown = false;
+double g_fps = 60, g_jitter = 0, g_hitch = 0;
+int g_hitchFrames = 2;
+
+// Frames seen by the game loop (poll mode).
+struct Frame {
+    double ms;
+    POINT p;
+    bool down;
+};
+std::vector<Frame> g_frames;
+double g_maxGap = 0, g_sumGap = 0;
+long g_gaps = 0, g_over25 = 0, g_over34 = 0, g_over50 = 0;
+
+double nowMs() {
+    static const double freq = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return double(f.QuadPart) / 1000.0;
+    }();
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return double(c.QuadPart) / freq;
+}
 
 void save() {
     BITMAPINFOHEADER bi{};
@@ -53,7 +84,22 @@ void save() {
     std::wstring stats = g_out + L".stats";
     if (FILE* s = _wfopen(stats.c_str(), L"w")) {
         fprintf(s, "presses %ld moves %ld\n", g_presses, g_moves);
+        if (g_poll && g_gaps)
+            fprintf(s, "frames %ld avg %.1f ms max %.1f ms over25 %ld over34 %ld over50 %ld\n", g_gaps + 1,
+                    g_sumGap / g_gaps, g_maxGap, g_over25, g_over34, g_over50);
         fclose(s);
+    }
+    if (g_poll) {
+        // Only the frames not written yet, so saving stays quick however long the test runs.
+        static size_t logged = 0;
+        std::wstring log = g_out + L".frames";
+        if (FILE* f = _wfopen(log.c_str(), logged ? L"a" : L"w")) {
+            for (; logged < g_frames.size(); ++logged) {
+                const Frame& fr = g_frames[logged];
+                fprintf(f, "%.2f %ld %ld %d\n", fr.ms, fr.p.x, fr.p.y, fr.down ? 1 : 0);
+            }
+            fclose(f);
+        }
     }
     g_dirty = false;
 }
@@ -64,6 +110,41 @@ void lineTo(POINT p) {
     SetPixel(g_mem, p.x, p.y, RGB(0, 0, 0));
     g_last = p;
     g_dirty = true;
+}
+
+// One frame of the game loop: looks at the cursor and the button, and draws.
+void gameFrame(HWND hwnd) {
+    Frame fr;
+    fr.ms = nowMs();
+    GetCursorPos(&fr.p);
+    ScreenToClient(hwnd, &fr.p);
+    fr.down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (!g_frames.empty()) {
+        const double gap = fr.ms - g_frames.back().ms;
+        g_sumGap += gap;
+        ++g_gaps;
+        if (gap > g_maxGap) g_maxGap = gap;
+        g_over25 += gap > 25;
+        g_over34 += gap > 34;
+        g_over50 += gap > 50;
+    }
+    g_frames.push_back(fr);
+    const POINT p = fr.p;
+    const bool inside = p.x >= 0 && p.y >= 0 && p.x < g_w && p.y < g_h;
+    if (fr.down && !g_pollDown && inside) {
+        ++g_presses;
+        g_last = p;
+        SetPixel(g_mem, p.x, p.y, RGB(0, 0, 0));
+        g_dirty = true;
+        g_pollDown = true;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    } else if (fr.down && g_pollDown) {
+        ++g_moves;
+        lineTo(p);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    } else if (!fr.down) {
+        g_pollDown = false;
+    }
 }
 
 LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -78,7 +159,6 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             FillRect(g_mem, &r, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
             SelectObject(g_mem, GetStockObject(BLACK_PEN));
             SetTimer(hwnd, 1, 1000, nullptr);
-            if (g_poll) SetTimer(hwnd, 2, 16, nullptr);
             return 0;
         }
         case WM_LBUTTONDOWN:
@@ -106,28 +186,6 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         case WM_TIMER:
-            if (wp == 2) {
-                // One "game frame": sample the cursor and the button state.
-                POINT p;
-                GetCursorPos(&p);
-                ScreenToClient(hwnd, &p);
-                const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-                const bool inside = p.x >= 0 && p.y >= 0 && p.x < g_w && p.y < g_h;
-                if (down && !g_pollDown && inside) {
-                    ++g_presses;
-                    g_last = p;
-                    SetPixel(g_mem, p.x, p.y, RGB(0, 0, 0));
-                    g_dirty = true;
-                    g_pollDown = true;
-                } else if (down && g_pollDown) {
-                    ++g_moves;
-                    lineTo(p);
-                } else if (!down) {
-                    g_pollDown = false;
-                }
-                InvalidateRect(hwnd, nullptr, FALSE);
-                return 0;
-            }
             if (g_dirty) save();
             return 0;
         case WM_PAINT: {
@@ -159,7 +217,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         g_w = _wtoi(argv[4]);
         g_h = _wtoi(argv[5]);
     }
-    if (argc > 6 && lstrcmpiW(argv[6], L"poll") == 0) g_poll = true;
+    if (argc > 6 && _wcsnicmp(argv[6], L"poll", 4) == 0) {
+        g_poll = true;
+        swscanf(argv[6] + 4, L":%lf:%lf:%lf:%d", &g_fps, &g_jitter, &g_hitch, &g_hitchFrames);
+        if (g_fps < 1) g_fps = 60;
+        if (g_hitchFrames < 1) g_hitchFrames = 1;
+    }
     const wchar_t* title = argc > 7 ? argv[7] : L"TestCanvas";
     WNDCLASSW wc{};
     wc.lpfnWndProc = proc;
@@ -176,15 +239,40 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     UpdateWindow(hwnd);
     POINT origin{0, 0};
     ClientToScreen(hwnd, &origin);
+
     std::wstring info = g_out + L".txt";
     if (FILE* f = _wfopen(info.c_str(), L"w")) {
         fprintf(f, "%ld %ld %d %d\n", origin.x, origin.y, g_w, g_h);
         fclose(f);
     }
     MSG m;
-    while (GetMessageW(&m, nullptr, 0, 0) > 0) {
-        TranslateMessage(&m);
-        DispatchMessageW(&m);
+    if (!g_poll) {
+        while (GetMessageW(&m, nullptr, 0, 0) > 0) {
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+        return 0;
     }
-    return 0;
+    // Game loop: messages, then a look at the mouse, then wait for the next frame.
+    timeBeginPeriod(1);
+    std::mt19937 rng(1234);
+    std::uniform_real_distribution<double> uni(0.0, 1.0);
+    const double frame = 1000.0 / g_fps;
+    double next = nowMs();
+    for (;;) {
+        while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
+            if (m.message == WM_QUIT) return 0;
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+        gameFrame(hwnd);
+        double dt = frame * (1.0 + g_jitter * uni(rng));
+        if (uni(rng) < g_hitch) dt += frame * double(1 + int(uni(rng) * g_hitchFrames));
+        next = std::max(next + dt, nowMs() + 1.0);
+        for (;;) {
+            const double left = next - nowMs();
+            if (left <= 0) break;
+            Sleep(left > 2.0 ? DWORD(left - 1.0) : 0);
+        }
+    }
 }

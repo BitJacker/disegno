@@ -120,6 +120,14 @@ private:
 
 bool keyDown(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
+// Waits until the thread of `w` has taken the input sent so far. A game answers messages
+// only between two frames, so a game that freezes for a moment is waited for instead of
+// missing a press or a release (which would join two strokes with a line).
+void syncWith(HWND w) {
+    DWORD_PTR res = 0;
+    SendMessageTimeoutW(w, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 1000, &res);
+}
+
 DWORD WINAPI worker(LPVOID arg) {
     std::unique_ptr<DrawJob> job(static_cast<DrawJob*>(arg));
     timeBeginPeriod(1);
@@ -145,7 +153,8 @@ DWORD WINAPI worker(LPVOID arg) {
     };
     auto stopPressed = [&] { return hotkeys::takeStop() || (!hotkeys::active() && keyDown(VK_ESCAPE)); };
     auto toScreen = [&](float x, float y) {
-        return POINT{job->origin.x + LONG(std::lround(x)), job->origin.y + LONG(std::lround(y))};
+        // Stroke points sit at pixel centres (x.5): the pixel is the one that contains them.
+        return POINT{job->origin.x + LONG(std::floor(x)), job->origin.y + LONG(std::floor(y))};
     };
 
     // Checks stop/pause keys and the safety stop. Returns false when drawing must end.
@@ -187,53 +196,22 @@ DWORD WINAPI worker(LPVOID arg) {
         return true;
     };
 
+    std::vector<dz::Step> steps;
     for (int si = 0; si < total; ++si) {
-        const auto& pts = job->strokes[size_t(si)].pts;
-        if (pts.empty()) {
-            ++done;
-            continue;
-        }
-        const POINT start = toScreen(pts[0].x, pts[0].y);
-        inj.move(start);
-        waitMs(t.downDelayMs);
-        if (!poll()) break;
-        if (t.jiggle) {
-            inj.move(POINT{start.x + 1, start.y});
-            waitMs(std::max(1.f, t.moveDelayMs));
-            inj.move(start);
-            waitMs(std::max(1.f, t.moveDelayMs));
-        }
-        inj.press(true);
-        waitMs(t.downDelayMs);
-
+        steps.clear();
+        dz::planStroke(job->strokes[size_t(si)], t, steps);
         bool ok = true;
-        if (pts.size() == 1) {
-            // A dot: nudge so apps that only paint while moving still leave a mark.
-            inj.move(POINT{start.x + 1, start.y});
-            waitMs(t.moveDelayMs);
-            inj.move(start);
-            waitMs(t.moveDelayMs);
-            ok = poll();
-        }
-        dz::Pt prev = pts[0];
-        for (size_t k = 1; k < pts.size() && ok; ++k) {
-            const dz::Pt cur = pts[k];
-            const int n = dz::movesForSegment(dz::dist(prev, cur), t.stepPx);
-            for (int j = 1; j <= n; ++j) {
-                const float f = float(j) / float(n);
-                inj.move(toScreen(prev.x + (cur.x - prev.x) * f, prev.y + (cur.y - prev.y) * f));
-                waitMs(t.moveDelayMs);
-                if (!poll()) {
-                    ok = false;
-                    break;
-                }
+        for (const dz::Step& st : steps) {
+            const POINT at = toScreen(st.at.x, st.at.y);
+            const POINT last = inj.last();
+            if (at.x != last.x || at.y != last.y) inj.move(at);
+            if (st.down != inj.isDown()) inj.press(st.down);
+            if (st.sync && job->syncWindow) syncWith(job->syncWindow);
+            waitMs(st.ms);
+            if (!poll()) {
+                ok = false;
+                break;
             }
-            prev = cur;
-        }
-        if (inj.isDown()) {
-            waitMs(t.upDelayMs);
-            inj.press(false);
-            waitMs(t.upDelayMs);
         }
         if (!ok) break;
         ++done;

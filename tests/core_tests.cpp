@@ -8,6 +8,7 @@
 #include "core/image.h"
 #include "core/pipeline.h"
 #include "core/render.h"
+#include "core/simulate.h"
 #include "core/strokes.h"
 
 namespace {
@@ -207,6 +208,187 @@ void testPipeline() {
     CHECK(!dz::buildDrawing(pic, W, H, ps, c, &cancel));
 }
 
+
+// Two black squares on white paper, far apart.
+dz::Gray twoSquares(int w, int h) {
+    dz::Gray g(w, h, 1.f);
+    for (int y = h / 4; y < 3 * h / 4; ++y)
+        for (int x = 0; x < w; ++x)
+            if ((x > w / 10 && x < 4 * w / 10) || (x > 6 * w / 10 && x < 9 * w / 10)) g.at(x, y) = 0.f;
+    return g;
+}
+
+void testZigZagFill() {
+    // A dark block is filled by a few long zig-zag strokes, not one stroke per line.
+    const dz::Gray pic = twoSquares(400, 300);
+    for (dz::Style style : {dz::Style::Lines, dz::Style::Hatch}) {
+        dz::Params p;
+        p.style = style;
+        p.brush = 2;
+        dz::Drawing d;
+        dz::buildDrawing(pic, 400, 300, p, d);
+        CHECK(!d.strokes.empty());
+        size_t points = dz::totalPoints(d.strokes);
+        CHECK(d.strokes.size() * 8 < points);  // many runs per stroke
+        // No stroke may cross the white paper between or around the squares.
+        bool clean = true;
+        for (const auto& s : d.strokes)
+            for (size_t i = 1; i < s.pts.size(); ++i) {
+                const dz::Pt a = s.pts[i - 1], b = s.pts[i];
+                for (int k = 1; k < 20; ++k) {
+                    const float f = float(k) / 20.f;
+                    const int x = int(a.x + (b.x - a.x) * f), y = int(a.y + (b.y - a.y) * f);
+                    // Allow the pen to touch the edge of a square (anti-aliased border).
+                    bool nearInk = false;
+                    for (int dy = -3; dy <= 3 && !nearInk; ++dy)
+                        for (int dx = -3; dx <= 3 && !nearInk; ++dx)
+                            nearInk = pic.atClamped(x + dx, y + dy) < 0.5f;
+                    if (!nearInk) clean = false;
+                }
+            }
+        CHECK(clean);
+    }
+}
+
+void testFitBuilder() {
+    const dz::Gray pic = testPicture(300, 200);
+    const dz::Timing game = dz::kTimingGame;
+    dz::Params p;
+    p.style = dz::Style::Sketch;
+    p.detail = 10;
+    p.brush = 1;
+    dz::Drawing full;
+    CHECK(dz::buildDrawingFor(pic, 900, 600, p, game, 0, full));
+    const double fullSec = dz::estimateSeconds(full.strokes, game);
+    CHECK(fullSec > 0 && full.coarse == 1.f && !full.trimmed);
+
+    const double limit = fullSec / 3;
+    dz::Drawing fit;
+    CHECK(dz::buildDrawingFor(pic, 900, 600, p, game, limit, fit));
+    CHECK(!fit.strokes.empty());
+    CHECK(dz::estimateSeconds(fit.strokes, game) <= limit + 1e-6);
+    CHECK(fit.coarse > 1.f || fit.trimmed);
+
+    // A limit nothing can meet still returns something that fits (cut strokes).
+    dz::Drawing tiny;
+    CHECK(dz::buildDrawingFor(pic, 900, 600, p, game, 0.5, tiny));
+    CHECK(dz::estimateSeconds(tiny.strokes, game) <= 0.5 + 1e-6);
+
+    // Vertex-per-frame timing simplifies polylines (never adds points).
+    std::vector<dz::Stroke> st(1);
+    for (int i = 0; i <= 50; ++i) st[0].pts.push_back({float(i), float(i % 2) * 0.3f});
+    dz::prepareForTiming(st, game);
+    CHECK(st[0].pts.size() == 2);
+}
+
+void testPlan() {
+    // Game timing: every state is held for a whole frame, and each step changes either the
+    // position or the button, never both.
+    const dz::Timing g = dz::kTimingGame;
+    const dz::Stroke s{{{0, 0}, {50, 0}, {50, 10}}, 0};
+    std::vector<dz::Step> steps;
+    dz::planStroke(s, g, steps);
+    CHECK(steps.size() == 5);
+    if (steps.size() == 5) {
+        CHECK(!steps[0].down && steps[1].down && steps[2].down && steps[3].down && !steps[4].down);
+        CHECK(near(steps[0].ms, g.downDelayMs) && near(steps[1].ms, g.downDelayMs));
+        CHECK(near(steps[2].ms, g.moveDelayMs) && near(steps[3].ms, g.moveDelayMs));
+        CHECK(near(steps[4].at.x, 50) && near(steps[4].at.y, 10) && near(steps[4].ms, g.upDelayMs));
+        // The game window is waited for after the press and the release only.
+        CHECK(!steps[0].sync && steps[1].sync && !steps[2].sync && !steps[3].sync && steps[4].sync);
+    }
+    for (size_t i = 1; i < steps.size(); ++i) {
+        const bool moved = dz::dist(steps[i].at, steps[i - 1].at) > 0;
+        CHECK(!(moved && steps[i].down != steps[i - 1].down));
+    }
+    // The estimate is the sum of the steps (plus the expected waits for the game).
+    double ms = 0;
+    for (const auto& st : steps) ms += 0.05 + st.ms + (st.sync ? dz::kSyncWaitMs : 0.f);
+    CHECK(near(float(dz::strokeSeconds(s, g)), float(ms / 1000.0)));
+
+    // Apps: small steps, and the last one waits before the release.
+    const dz::Timing f = dz::kTimingFast;
+    const dz::Stroke line{{{0, 0}, {100, 0}}, 0};
+    steps.clear();
+    dz::planStroke(line, f, steps);
+    CHECK(steps.size() == 2 + 10 + 1);
+    if (steps.size() == 13) CHECK(near(steps[11].ms, f.moveDelayMs + f.upDelayMs));
+
+    // A dot gets a one-pixel nudge while pressed.
+    const dz::Stroke dot{{{5, 5}}, 0};
+    steps.clear();
+    dz::planStroke(dot, g, steps);
+    CHECK(steps.size() == 4 && steps[2].down && near(steps[2].at.x, 6));
+}
+
+void testGameSimulation() {
+    const dz::Gray pic = testPicture(300, 200);
+    dz::Params p;
+    p.style = dz::Style::Lines;
+    p.detail = 8;
+    p.brush = 1;
+    const float W = 600, H = 400;
+    auto check = [&](const dz::Timing& t, const dz::FrameModel& fm) {
+        dz::Drawing d;
+        dz::buildDrawingFor(pic, W, H, p, t, 0, d);
+        dz::Gray want(int(W), int(H), 1.f), got(int(W), int(H), 1.f);
+        dz::renderStrokes(want, d.strokes, 1.f, 0, 0, 1.f);
+        dz::renderStrokes(got, dz::simulateFrames(d.strokes, t, fm), 1.f, 0, 0, 1.f);
+        return dz::compareInk(want, got, 1);
+    };
+    // A steady 60 fps game sees everything; so does a 30 fps one with the slow preset.
+    dz::FrameModel steady;
+    dz::InkDiff a = check(dz::kTimingGame, steady);
+    CHECK(a.missing < 0.001 && a.extra < 0.001);
+    dz::FrameModel slow;
+    slow.fps = 30;
+    slow.jitter = 0.3;
+    dz::InkDiff b = check(dz::kTimingGameSlow, slow);
+    CHECK(b.missing < 0.01 && b.extra < 0.01);
+    // A stuttering 60 fps game loses very little with the game preset...
+    dz::FrameModel stutter;
+    stutter.jitter = 0.3;
+    stutter.hitch = 0.03;
+    dz::InkDiff c = check(dz::kTimingGame, stutter);
+    CHECK(c.missing < 0.05 && c.extra < 0.01);
+    // ...while holding each corner for less than a frame loses a lot (the simulator notices).
+    dz::InkDiff e = check(dz::Timing{0, 10, 10, 4, false}, slow);
+    CHECK(e.missing > 0.2);
+
+    // A game that freezes for up to 8 frames: waiting for it at every press and release
+    // means no two strokes are ever joined by a stray line.
+    p.style = dz::Style::Sketch;
+    dz::FrameModel freeze;
+    freeze.jitter = 0.3;
+    freeze.hitch = 0.06;
+    freeze.hitchFrames = 8;
+    auto strays = [&](const dz::Timing& t) {
+        dz::Drawing d;
+        dz::buildDrawingFor(pic, W, H, p, t, 0, d);
+        dz::Gray want(int(W), int(H), 1.f);
+        dz::renderStrokes(want, d.strokes, 1.f, 0, 0, 1.f);
+        int n = 0;
+        for (uint32_t seed = 1; seed <= 20; ++seed) {
+            freeze.seed = seed;
+            n += dz::countStrayLines(want, dz::simulateFrames(d.strokes, t, freeze));
+        }
+        return n;
+    };
+    dz::Timing unsynced = dz::kTimingGame;
+    unsynced.sync = false;
+    const int withSync = strays(dz::kTimingGame), without = strays(unsynced);
+    std::printf("  stray lines in a freezing game: %d synced, %d not synced\n", withSync, without);
+    CHECK(withSync == 0);
+    CHECK(without > withSync);
+
+    // compareInk basics.
+    dz::Gray blank(20, 20, 1.f), line(20, 20, 1.f);
+    for (int x = 2; x < 18; ++x) line.at(x, 10) = 0.f;
+    dz::InkDiff same = dz::compareInk(line, line, 1), none = dz::compareInk(line, blank, 1);
+    CHECK(same.missing == 0 && same.extra == 0);
+    CHECK(near(float(none.missing), 1.f) && none.extra == 0);
+}
+
 void testRender() {
     dz::Gray canvas(50, 50, 1.f);
     std::vector<dz::Stroke> s(1);
@@ -226,6 +408,10 @@ int main() {
     testFitToTime();
     testResizeAndOrientation();
     testPipeline();
+    testZigZagFill();
+    testFitBuilder();
+    testPlan();
+    testGameSimulation();
     testRender();
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);

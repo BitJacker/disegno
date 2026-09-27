@@ -18,6 +18,7 @@ struct DrawJob {
     dz::Timing timing;
     bool failsafe = true;             // stop when the user moves the mouse
     bool relative = false;            // relative moves, for games that ignore absolute input
+    HWND syncWindow = nullptr;        // window under the area: waited for when the timing syncs
     HWND notify = nullptr;            // receives WM_APP_DRAW_PROGRESS / _PAUSED / _DONE
 };
 

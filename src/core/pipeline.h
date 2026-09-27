@@ -12,9 +12,10 @@ enum class Style : int {
     Outline = 0,  // contours only (fastest)
     Sketch = 1,   // contours + cross-hatched shading (most "drawn" look)
     Hatch = 2,    // shading only, pen-and-ink style
-    Dots = 3,     // halftone rows, closest to the photo (slowest)
+    Dots = 3,     // dithered dots, closest to the photo (slowest: one click per dot)
+    Lines = 4,    // photo made of horizontal lines (engraving look), fast in games
 };
-constexpr int kStyleCount = 4;
+constexpr int kStyleCount = 5;
 
 struct Params {
     Style style = Style::Sketch;
@@ -23,6 +24,7 @@ struct Params {
     float brush = 2.f;     // pen thickness in the target app, pixels
     bool invert = false;   // treat light areas as ink (white pen on dark paper)
     bool stretch = false;  // fill the area, ignoring the aspect ratio
+    float coarse = 1.f;    // >1 makes everything coarser (used to fit a time limit)
 };
 
 // Where the picture lands inside the target area.
@@ -35,5 +37,12 @@ Layout fitLayout(int imgW, int imgH, float areaW, float areaH, bool stretch);
 // Returns false when cancelled through `cancel`.
 bool buildDrawing(const Gray& img, float areaW, float areaH, const Params& p, Drawing& out,
                   const std::atomic<bool>* cancel = nullptr);
+
+// Builds the drawing for a given mouse timing: strokes are prepared for that timing and,
+// when `maxSeconds` > 0, the level of detail is lowered just enough to finish in time
+// (strokes are cut only if even the coarsest version is too slow). Drawing::coarse,
+// ::fullCount and ::trimmed tell what was done.
+bool buildDrawingFor(const Gray& img, float areaW, float areaH, const Params& p, const Timing& t, double maxSeconds,
+                     Drawing& out, const std::atomic<bool>* cancel = nullptr);
 
 }  // namespace dz

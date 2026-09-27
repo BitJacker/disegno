@@ -23,15 +23,48 @@ struct Drawing {
     float height = 0;
     float brush = 1;   // pen thickness the strokes were built for
     std::vector<Stroke> strokes;
+    // Filled by buildDrawingFor when a time limit applies.
+    float coarse = 1;        // detail reduction that was needed (1 = none)
+    size_t fullCount = 0;    // strokes before cutting
+    bool trimmed = false;    // strokes had to be cut to fit the time
 };
 
 // Mouse timing shared by the drawing engine and the time estimate.
+//
+// With stepPx > 0 the mouse glides along each stroke in small steps, for apps that handle
+// every mouse message (Paint & co.). With stepPx <= 0 it jumps from vertex to vertex, for
+// games that look at the mouse once per frame and join what they see with straight lines:
+// every state (each vertex, the press, the pause before it) is then held for moveDelayMs /
+// downDelayMs, which must be longer than the slowest frame the drawing has to survive.
 struct Timing {
-    float stepPx = 6;        // max distance between mouse positions while pressed (0 = vertices only)
+    float stepPx = 6;        // max distance between mouse positions while pressed (0 = frame mode)
     float moveDelayMs = 2;   // pause after each move while pressed
     float downDelayMs = 8;   // pause after reaching a stroke start and after pressing
-    float upDelayMs = 8;     // pause before and after releasing
+    float upDelayMs = 8;     // pause after releasing (and before, when stepPx > 0)
     bool jiggle = false;     // 1px wiggle before pressing (lets games notice the hover)
+    bool sync = false;       // frame mode: after each press and release, also wait for the
+                             // game window to take the input (a frozen game is waited for)
+};
+
+// Expected wait for the game window when syncing: half a frame at 60 fps.
+constexpr float kSyncWaitMs = 8.3f;
+
+// Speed presets shared by the app and the tools.
+inline constexpr Timing kTimingFast{10, 1, 4, 4, false};       // Paint, Photoshop, Krita...
+inline constexpr Timing kTimingNormal{8, 4, 25, 25, false};
+inline constexpr Timing kTimingWeb{12, 8, 25, 25, false};      // drawing websites
+inline constexpr Timing kTimingGame{0, 34, 34, 4, false, true};      // games at 60 fps, even when a frame drops
+inline constexpr Timing kTimingGameSlow{0, 50, 50, 4, false, true};  // games at 30 fps, or that stutter
+inline constexpr Timing kTimingSlow{3, 30, 70, 70, true};
+
+// One mouse state: the engine puts the cursor at `at`, sets the button to `down` (never both
+// in the same step) and keeps it like that for `ms` milliseconds. With `sync` it first waits
+// until the game window has taken the input.
+struct Step {
+    Pt at;
+    bool down = false;
+    float ms = 0;
+    bool sync = false;
 };
 
 float dist(const Pt& a, const Pt& b);
@@ -51,6 +84,16 @@ void joinStrokes(std::vector<Stroke>& strokes, float maxGap);
 
 // Number of mouse moves the engine sends for a pressed segment of length len.
 int movesForSegment(float len, float stepPx);
+
+// Adapts strokes to a timing: when the mouse moves once per vertex (stepPx <= 0, e.g.
+// games that read the mouse once per frame) every vertex costs a frame, so polylines
+// are simplified a little more.
+void prepareForTiming(std::vector<Stroke>& strokes, const Timing& t);
+
+// Appends the mouse steps that draw one stroke: go to the start with the button up, press,
+// follow the stroke, release. The drawing engine, the time estimate and the game simulator
+// all use this, so they always agree.
+void planStroke(const Stroke& s, const Timing& t, std::vector<Step>& out);
 
 // Time needed to draw one stroke / all strokes with the given timing, in seconds.
 double strokeSeconds(const Stroke& s, const Timing& t);

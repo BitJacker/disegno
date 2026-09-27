@@ -108,20 +108,30 @@ struct SpeedPreset {
     const wchar_t* name;
     dz::Timing timing;  // stepPx, moveDelayMs, downDelayMs, upDelayMs, jiggle
 };
-// Games such as Roblox read the mouse once per frame (~16 ms): between two strokes the
-// button has to stay released for a few frames, or the game never notices the release
-// and joins every stroke to the next one with a line.
+// Games such as Roblox read the mouse once per frame and join what they see with straight
+// lines: their presets jump from corner to corner and hold every state (each corner, the
+// press, the release) for about two frames, so a slow or dropped frame loses nothing.
 const SpeedPreset kSpeeds[] = {
-    {"auto", L"Automatica  (consigliata)", {8.f, 4.f, 25.f, 25.f, false}},
-    {"fast", L"Veloce  (Paint, Photoshop, Krita…)", {10.f, 1.f, 4.f, 4.f, false}},
-    {"normal", L"Normale", {8.f, 4.f, 25.f, 25.f, false}},
-    {"web", L"Siti web  (skribbl, Gartic…)", {12.f, 8.f, 25.f, 25.f, false}},
-    {"game", L"Roblox e giochi", {24.f, 17.f, 35.f, 35.f, false}},
-    {"slow", L"Molto lenta  (massima sicurezza)", {3.f, 30.f, 70.f, 70.f, true}},
+    {"auto", L"Automatica  (consigliata)", dz::kTimingNormal},
+    {"fast", L"Veloce  (Paint, Photoshop, Krita…)", dz::kTimingFast},
+    {"normal", L"Normale", dz::kTimingNormal},
+    {"web", L"Siti web  (skribbl, Gartic…)", dz::kTimingWeb},
+    {"game", L"Roblox e giochi", dz::kTimingGame},
+    {"gameslow", L"Giochi lenti o che scattano", dz::kTimingGameSlow},
+    {"slow", L"Molto lenta  (massima sicurezza)", dz::kTimingSlow},
     {"custom", L"Personalizzata", {6.f, 5.f, 20.f, 20.f, false}},
 };
 constexpr int kSpeedCount = int(sizeof kSpeeds / sizeof kSpeeds[0]);
-enum : int { kAutoSpeed = 0, kFastSpeed, kNormalSpeed, kWebSpeed, kGameSpeed, kSlowSpeed, kCustomSpeed };
+enum : int {
+    kAutoSpeed = 0,
+    kFastSpeed,
+    kNormalSpeed,
+    kWebSpeed,
+    kGameSpeed,
+    kGameSlowSpeed,
+    kSlowSpeed,
+    kCustomSpeed
+};
 static_assert(kCustomSpeed == kSpeedCount - 1, "speed list and indices out of sync");
 
 // The kind of app under the drawing area decides the automatic speed.
@@ -132,8 +142,9 @@ const wchar_t* kStyleNames[dz::kStyleCount] = {
     L"Schizzo dettagliato  (contorni + ombre)",
     L"Tratteggio  (solo ombre)",
     L"Puntini  (dettagliatissimo, lento)",
+    L"Righe  (effetto foto, veloce nei giochi)",
 };
-const char* kStyleKeys[dz::kStyleCount] = {"contorni", "schizzo", "tratteggio", "puntini"};
+const char* kStyleKeys[dz::kStyleCount] = {"contorni", "schizzo", "tratteggio", "puntini", "righe"};
 
 enum class Phase { Idle, Picking, Countdown, Drawing };
 enum class After { None, Draw };
@@ -143,6 +154,8 @@ struct ProcJob {
     std::shared_ptr<const dz::Gray> img;
     float w = 0, h = 0;
     dz::Params params;
+    dz::Timing timing;
+    double maxSeconds = 0;  // 0 = no time limit
     std::shared_ptr<std::atomic<bool>> cancel;
     HWND notify = nullptr;
 };
@@ -330,6 +343,19 @@ HWND windowAt(POINT pt) {
     return search.found;
 }
 
+// The window that gets the mouse input at `pt`: the deepest child of the app under it.
+HWND inputWindowAt(POINT pt) {
+    HWND h = windowAt(pt);
+    for (int depth = 0; h && depth < 16; ++depth) {
+        POINT c = pt;
+        ScreenToClient(h, &c);
+        HWND child = ChildWindowFromPointEx(h, c, CWP_SKIPINVISIBLE | CWP_SKIPDISABLED | CWP_SKIPTRANSPARENT);
+        if (!child || child == h) break;
+        h = child;
+    }
+    return h;
+}
+
 std::wstring guessExtension(const Bytes& d) {
     auto has = [&](size_t off, const char* sig) {
         size_t n = strlen(sig);
@@ -364,6 +390,11 @@ dz::Timing currentTiming() {
     const int s = effectiveSpeed();
     if (s == kCustomSpeed) {
         dz::Timing t = app.custom;
+        if (t.stepPx <= 0) {
+            // Step 0: corner to corner like the game presets, the delay being the frame to survive.
+            const float frame = std::max(1.f, t.moveDelayMs);
+            return dz::Timing{0.f, frame, frame, dz::kTimingGame.upDelayMs, false, true};
+        }
         // Keep the button released for at least a couple of game frames between strokes.
         t.downDelayMs = t.upDelayMs = std::clamp(t.moveDelayMs * 2.5f, 25.f, 150.f);
         t.jiggle = t.moveDelayMs >= 12.f;
@@ -473,36 +504,23 @@ void updateInfo() {
         s = L"Preparazione del disegno…";
     } else {
         const size_t n = app.drawing->strokes.size();
-        const size_t all = app.drawingFull ? app.drawingFull->strokes.size() : n;
         const double sec = dz::estimateSeconds(app.drawing->strokes, currentTiming());
         s = wu::formatInt(static_cast<long long>(n));
-        if (n < all) s += L" di " + wu::formatInt(static_cast<long long>(all));
+        if (app.drawing->trimmed) s += L" di " + wu::formatInt(static_cast<long long>(app.drawing->fullCount));
         s += L" tratti   ·   tempo stimato " + wu::formatDuration(sec);
-        if (n < all) s += L" (massimo " + wu::formatDuration(app.limitSecs) + L")";
+        if (app.limitOn) s += L" (massimo " + wu::formatDuration(app.limitSecs) + L")";
+        if (app.drawing->coarse > 1.01f)
+            s += L"   ·   dettaglio ridotto per stare nel tempo";
+        if (app.limitOn && app.params.style == dz::Style::Dots && app.drawing->coarse > 2.f)
+            s += L"   ·   con poco tempo prova lo stile «Righe»";
         if (app.speedIndex == kAutoSpeed) s += L"   ·   velocità: " + std::wstring(kSpeeds[effectiveSpeed()].name);
         if (!app.hasArea) s += L"   ·   scegli l'area per l'anteprima esatta";
     }
     setText(app.info, s);
 }
 
-// Applies the optional time limit to the full drawing.
-void applyTimeLimit() {
-    if (!app.drawingFull) {
-        app.drawing.reset();
-        return;
-    }
-    if (!app.limitOn) {
-        app.drawing = app.drawingFull;
-        return;
-    }
-    auto d = std::make_shared<dz::Drawing>();
-    d->width = app.drawingFull->width;
-    d->height = app.drawingFull->height;
-    d->brush = app.drawingFull->brush;
-    // Keep 10% in reserve: games can run a little slower than the estimate.
-    d->strokes = dz::fitToTime(app.drawingFull->strokes, currentTiming(), double(app.limitSecs) * 0.9);
-    app.drawing = d;
-}
+// The processing thread already fitted the drawing to the timing and time limit.
+void applyTimeLimit() { app.drawing = app.drawingFull; }
 
 void updateAreaInfo() {
     if (!app.hasArea) {
@@ -618,7 +636,7 @@ void loadSettings() {
     app.limitOn = settingInt("limit_on", 0, 0, 1) != 0;
     app.limitSecs = settingInt("limit_secs", 60, 5, 3600);
     app.custom.moveDelayMs = float(settingInt("custom_delay", 5, 0, 500));
-    app.custom.stepPx = float(settingInt("custom_step", 6, 1, 100));
+    app.custom.stepPx = float(settingInt("custom_step", 6, 0, 100));
     app.seconds = settingInt("seconds", 5, 1, 30);
     app.failsafeOn = settingInt("failsafe", 1, 0, 1) != 0;
     app.relativeOn = settingInt("relative", 0, 0, 1) != 0;
@@ -674,7 +692,8 @@ DWORD WINAPI procThread(LPVOID arg) {
     dz::Drawing* d = nullptr;
     try {
         d = new dz::Drawing();
-        if (!dz::buildDrawing(*job->img, job->w, job->h, job->params, *d, job->cancel.get())) {
+        if (!dz::buildDrawingFor(*job->img, job->w, job->h, job->params, job->timing, job->maxSeconds, *d,
+                                 job->cancel.get())) {
             delete d;
             d = nullptr;
         }
@@ -706,6 +725,9 @@ void startProcess() {
     job->img = app.gray;
     areaSize(job->w, job->h);
     job->params = app.params;
+    job->timing = currentTiming();
+    // Keep 10% in reserve: games can run a little slower than the estimate.
+    job->maxSeconds = app.limitOn ? double(app.limitSecs) * 0.9 : 0.0;
     job->cancel = std::make_shared<std::atomic<bool>>(false);
     job->notify = app.hwnd;
     app.procCancel = job->cancel;
@@ -1019,13 +1041,17 @@ std::vector<dz::Stroke> borderStrokes() {
 void beginCountdown(bool border) {
     if (app.phase != Phase::Idle || !app.hasArea) return;
     if (!border && !app.drawing) return;
+    const int speedBefore = effectiveSpeed();
     if (detectTarget()) {
-        // Another app is under the area now: the automatic speed (and time limit) may change.
-        applyTimeLimit();
         updateAreaInfo();
         updateSpeedFields();
-        updatePreview();
-        updateInfo();
+        if (!border && effectiveSpeed() != speedBefore) {
+            // Another kind of app is under the area now: rebuild for its timing, then start.
+            app.after = After::Draw;
+            setStatus(L"Preparo il disegno per " + app.targetName + L"…");
+            startProcess();
+            return;
+        }
     }
     app.jobIsBorder = border;
     app.jobImageId = app.currentId;
@@ -1094,6 +1120,7 @@ void onCountdownDone(bool ok) {
     job->timing = currentTiming();
     job->failsafe = app.failsafeOn;
     job->relative = app.relativeOn;
+    job->syncWindow = inputWindowAt(POINT{(app.area.left + app.area.right) / 2, (app.area.top + app.area.bottom) / 2});
     job->notify = app.hwnd;
     app.drawTotal = int(job->strokes.size());
     app.drawDone = 0;
@@ -1179,10 +1206,11 @@ void showHelp() {
         L"F5 = disegna      F6 = seleziona area      Ctrl+V = incolla foto\n\n"
         L"CONSIGLI\n"
         L"•  La velocità «Automatica» riconosce Paint, i browser e Roblox e sceglie i tempi giusti.\n"
-        L"•  Roblox e altri giochi leggono il mouse una volta per fotogramma: usa «Roblox e giochi» "
-        L"(o «Automatica»), stile Contorni o poco dettaglio, e lo spessore uguale al pennello del gioco.\n"
-        L"•  Giochi a tempo: attiva «Tempo massimo» e Disegno toglie i tratti meno importanti per "
-        L"finire in tempo.\n"
+        L"•  Roblox e altri giochi leggono il mouse una volta per fotogramma: usa «Automatica» (o «Roblox "
+        L"e giochi»), stile «Righe» o «Schizzo», e lo spessore uguale al pennello del gioco. Se il gioco "
+        L"va a scatti o sotto i 45 fps scegli «Giochi lenti o che scattano».\n"
+        L"•  Giochi a tempo: attiva «Tempo massimo» (300 s per un round da 5 minuti) e Disegno abbassa il "
+        L"dettaglio quanto basta per finire in tempo.\n"
         L"•  Se un gioco ignora il mouse prova «Movimento relativo».\n"
         L"•  Se l'app di disegno è avviata come amministratore, avvia anche Disegno come amministratore.");
 }
@@ -1516,7 +1544,7 @@ void createControls() {
     app.lblDelayMs = makeLabel(L"ms", ID_LBL_DELAY_MS);
     app.lblStep = makeLabel(L"Passo", ID_LBL_STEP);
     app.step = makeCtl(L"EDIT", L"", ES_NUMBER | WS_TABSTOP, ID_STEP, WS_EX_CLIENTEDGE);
-    app.stepUd = makeUpDown(ID_STEP_UD, app.step, 1, 100, 6);
+    app.stepUd = makeUpDown(ID_STEP_UD, app.step, 0, 100, 6);
     app.lblStepPx = makeLabel(L"px", ID_LBL_STEP_PX);
     app.failsafe = makeCtl(L"BUTTON", L"Fermati se muovo il mouse (sicurezza)", BS_AUTOCHECKBOX | WS_TABSTOP,
                            ID_FAILSAFE);
@@ -1537,7 +1565,8 @@ void createControls() {
                      L"o eliminare.");
     addTip(app.style, L"Contorni: solo le linee principali, il più veloce.\nSchizzo dettagliato: linee e ombre a "
                       L"tratteggio.\nTratteggio: solo ombre, come un'incisione.\nPuntini: puntini riga per riga, il "
-                      L"più simile alla foto ma il più lento.");
+                      L"più simile alla foto ma il più lento (un clic per puntino).\nRighe: la foto fatta di righe "
+                      L"orizzontali, come una stampa: il più dettagliato nei giochi a tempo.");
     addTip(app.detail, L"Più dettaglio = più linee e più precisione, ma serve più tempo.");
     addTip(app.shade, L"Quanto sono ampie e scure le ombre (0 = nessuna ombra).");
     addTip(app.brush, L"Spessore della matita o del pennello nell'app dove disegni, in pixel. Con pennelli grossi "
@@ -1550,17 +1579,22 @@ void createControls() {
     addTip(app.showArea, L"Mostra sullo schermo l'area scelta.");
     addTip(app.testBorder, L"Disegna solo il contorno dell'area: utile per controllare che sia quella giusta.");
     addTip(app.speed, L"«Automatica» riconosce l'app sotto l'area (Paint, browser, Roblox) e sceglie i tempi giusti.\n"
-                      L"Roblox e molti giochi leggono il mouse una volta per fotogramma: se il tasto viene lasciato "
-                      L"e ripremuto troppo in fretta non se ne accorgono e uniscono i tratti con delle righe. Con "
-                      L"«Roblox e giochi» il tasto resta alzato abbastanza a lungo.");
+                      L"Roblox e molti giochi leggono il mouse una volta per fotogramma e uniscono con una riga "
+                      L"quello che vedono: se perdono un rilascio del tasto, due tratti restano attaccati. Con "
+                      L"«Roblox e giochi» il mouse resta fermo circa due fotogrammi su ogni angolo, e dopo ogni clic "
+                      L"e rilascio Disegno aspetta che il gioco li abbia visti, anche se si blocca per un attimo.\n"
+                      L"«Giochi lenti o che scattano»: per giochi sotto i 45 fps.");
     addTip(app.delay, L"Pausa dopo ogni movimento del mouse mentre disegna (solo «Personalizzata»).");
-    addTip(app.step, L"Distanza massima tra due posizioni del mouse lungo una linea (solo «Personalizzata»).");
+    addTip(app.step, L"Distanza massima tra due posizioni del mouse lungo una linea (solo «Personalizzata»). "
+                     L"0 = da un angolo all'altro, come per i giochi: il ritardo diventa quanto resta fermo su "
+                     L"ogni angolo (almeno due fotogrammi del gioco).");
     addTip(app.failsafe, L"Se muovi il mouse mentre disegna, Disegno si ferma subito.");
     addTip(app.relative, L"Muove il mouse con spostamenti relativi, come un mouse vero. Prova se un gioco non "
                          L"disegna niente.");
     addTip(app.draw, L"Parte dopo il conto alla rovescia (F5). ESC per fermare, F8 per mettere in pausa.");
-    addTip(app.limit, L"Se il disegno richiede più tempo, Disegno toglie i tratti meno importanti (prima i pezzettini "
-                      L"e le ombre, poi il resto) così finisce entro i secondi indicati. Utile nei giochi a tempo.");
+    addTip(app.limit, L"Se il disegno richiede più tempo, Disegno abbassa il dettaglio quanto basta per finire entro i "
+                      L"secondi indicati (se non basta, toglie prima i pezzettini e le ombre). Utile nei giochi a "
+                      L"tempo: per un round da 5 minuti scrivi 300.");
     addTip(app.limitEdit, L"Secondi a disposizione per il disegno.");
 }
 
@@ -1609,12 +1643,9 @@ void onCommand(int id, int code, HWND ctl) {
             if (code == CBN_SELCHANGE && !app.loadingUi) {
                 app.speedIndex = std::clamp(int(SendMessageW(app.speed, CB_GETCURSEL, 0, 0)), 0, kSpeedCount - 1);
                 updateSpeedFields();
-                if (app.limitOn) {
-                    applyTimeLimit();
-                    updatePreview();
-                }
                 updateInfo();
                 saveSettingsLater();
+                scheduleProcess(50);  // the timing shapes the drawing (and the time limit)
             }
             break;
         case ID_BRUSH:
@@ -1637,13 +1668,10 @@ void onCommand(int id, int code, HWND ctl) {
         case ID_STEP:
             if (code == EN_CHANGE && !app.loadingUi && app.speedIndex == kCustomSpeed) {
                 app.custom.moveDelayMs = float(std::clamp(getInt(app.delay, 5), 0, 500));
-                app.custom.stepPx = float(std::clamp(getInt(app.step, 6), 1, 100));
-                if (app.limitOn) {
-                    applyTimeLimit();
-                    updatePreview();
-                }
+                app.custom.stepPx = float(std::clamp(getInt(app.step, 6), 0, 100));
                 updateInfo();
                 saveSettingsLater();
+                scheduleProcess(300);
             }
             break;
         case ID_INVERT:
@@ -1664,19 +1692,13 @@ void onCommand(int id, int code, HWND ctl) {
             app.limitOn = Button_GetCheck(app.limit) == BST_CHECKED;
             EnableWindow(app.limitEdit, app.limitOn);
             EnableWindow(app.limitUd, app.limitOn);
-            applyTimeLimit();
-            updatePreview();
-            updateInfo();
             saveSettingsLater();
+            scheduleProcess(50);
             break;
         case ID_LIMIT_SECS:
             if (code == EN_CHANGE && !app.loadingUi) {
                 app.limitSecs = std::clamp(getInt(app.limitEdit, 60), 5, 3600);
-                if (app.limitOn) {
-                    applyTimeLimit();
-                    updatePreview();
-                    updateInfo();
-                }
+                if (app.limitOn) scheduleProcess(400);
                 saveSettingsLater();
             }
             break;

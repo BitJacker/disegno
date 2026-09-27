@@ -219,16 +219,50 @@ int movesForSegment(float len, float stepPx) {
     return std::max(1, int(std::ceil(len / stepPx)));
 }
 
+void prepareForTiming(std::vector<Stroke>& strokes, const Timing& t) {
+    if (t.stepPx > 0) return;
+    for (Stroke& s : strokes) simplify(s.pts, 0.9f);
+}
+
+void planStroke(const Stroke& s, const Timing& t, std::vector<Step>& out) {
+    const auto& p = s.pts;
+    if (p.empty()) return;
+    const bool frames = t.stepPx <= 0;
+    const Pt start = p[0];
+    out.push_back({start, false, t.downDelayMs});  // travel, then let the app see where we are
+    if (t.jiggle) {
+        out.push_back({{start.x + 1, start.y}, false, std::max(1.f, t.moveDelayMs)});
+        out.push_back({start, false, std::max(1.f, t.moveDelayMs)});
+    }
+    const bool sync = frames && t.sync;
+    out.push_back({start, true, t.downDelayMs, sync});  // press
+    if (p.size() == 1) {
+        // A dot: a one-pixel nudge so apps that only paint while moving still leave a mark.
+        out.push_back({{start.x + 1, start.y}, true, frames ? t.moveDelayMs * 0.5f : t.moveDelayMs});
+    } else {
+        // Apps get small steps. A game joins the positions it sees with straight lines, so it
+        // gets one move per vertex, held for a whole (long) frame so none goes unseen.
+        for (size_t i = 1; i < p.size(); ++i) {
+            const Pt a = p[i - 1], b = p[i];
+            const int n = movesForSegment(dist(a, b), t.stepPx);
+            for (int j = 1; j <= n; ++j) {
+                const float f = float(j) / float(n);
+                out.push_back({{a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f}, true, t.moveDelayMs});
+            }
+        }
+    }
+    if (!frames) out.back().ms += t.upDelayMs;  // let the last move land before releasing
+    out.push_back({out.back().at, false, t.upDelayMs, sync});  // release
+}
+
 double strokeSeconds(const Stroke& s, const Timing& t) {
     if (s.pts.empty()) return 0;
+    thread_local std::vector<Step> steps;
+    steps.clear();
+    planStroke(s, t, steps);
     const double evt = 0.05;  // rough cost of one injected event, ms
-    double ms = evt + t.downDelayMs;                          // travel + settle
-    if (t.jiggle) ms += 2 * (evt + t.moveDelayMs);            // wiggle
-    ms += evt + t.downDelayMs;                                // press
-    if (s.pts.size() == 1) ms += 2 * (evt + t.moveDelayMs);   // dot nudge
-    for (size_t i = 1; i < s.pts.size(); ++i)
-        ms += movesForSegment(dist(s.pts[i - 1], s.pts[i]), t.stepPx) * (evt + t.moveDelayMs);
-    ms += t.upDelayMs + evt + t.upDelayMs;                    // release
+    double ms = 0;
+    for (const Step& st : steps) ms += evt + st.ms + (st.sync ? kSyncWaitMs : 0.f);
     return ms / 1000.0;
 }
 

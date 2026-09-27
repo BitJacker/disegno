@@ -71,7 +71,8 @@ Per sicurezza, se **muovi il mouse** mentre disegna, Disegno si ferma da solo
 | **Contorni** | Solo le linee principali, come un disegno a matita | La più veloce |
 | **Schizzo dettagliato** | Contorni + ombre a tratteggio incrociato | Media |
 | **Tratteggio** | Solo ombre, come un'incisione | Media |
-| **Puntini** | Puntini riga per riga: dettagliatissimo, il più simile alla foto | Lenta |
+| **Puntini** | Puntini riga per riga: dettagliatissimo, il più simile alla foto | Lenta (un clic per puntino) |
+| **Righe** | La foto fatta di righe orizzontali, come una stampa | Veloce: il più dettagliato nei giochi a tempo |
 
 - **Dettaglio**: più alto = più linee e più precisione, ma più tempo.
 - **Ombre**: quanto sono ampie e scure le ombre (0 = nessuna).
@@ -87,15 +88,27 @@ tempi giusti: *Veloce* per Paint e i programmi di disegno, *Siti web* per i brow
 *Roblox e giochi* per Roblox, *Normale* per tutto il resto. L'app riconosciuta compare
 sotto «Seleziona area».
 
-Perché i giochi vogliono più calma: Roblox (e molti giochi) guarda il mouse una volta per
-fotogramma, circa ogni 16 millesimi di secondo. Se il tasto viene lasciato e ripremuto più
-in fretta, il gioco non vede mai il rilascio e unisce tutti i tratti con delle righe. Con
-*Roblox e giochi* il tasto resta alzato per alcuni fotogrammi tra un tratto e l'altro.
+Perché i giochi sono diversi: Roblox (e molti giochi) guarda il mouse una volta per
+fotogramma, circa ogni 16 millesimi di secondo, e unisce con una riga dritta le posizioni
+che vede. Se in quel momento si perde un rilascio del tasto, due tratti restano attaccati da
+una riga; se si perde un angolo, la linea taglia la curva. Con *Roblox e giochi*:
 
-**Tempo massimo**: nei giochi a tempo attivalo e scrivi i secondi a disposizione.
-Se il disegno ci metterebbe di più, Disegno toglie prima i pezzettini e le ombre meno
-importanti e tiene le linee principali, così finisce in tempo. L'anteprima mostra
-esattamente cosa resta.
+- il mouse salta da un angolo all'altro del tratto (niente passettini inutili) e resta fermo
+  su ogni angolo, sul clic e sul rilascio per circa **due fotogrammi**, così anche un
+  fotogramma perso non rovina niente;
+- dopo ogni clic e ogni rilascio Disegno **aspetta che il gioco li abbia visti**: se il gioco
+  si blocca per un attimo, Disegno lo aspetta invece di andare avanti.
+
+Se il gioco va a scatti o sotto i 45 fps, scegli **Giochi lenti o che scattano**.
+
+**Tempo massimo**: nei giochi a tempo attivalo e scrivi i secondi a disposizione (300 per un
+round da 5 minuti). Se il disegno ci metterebbe di più, Disegno **abbassa il dettaglio quanto
+basta** per finire in tempo; solo se non basta toglie i pezzettini e le ombre meno
+importanti. L'anteprima mostra esattamente cosa verrà disegnato.
+
+Con *Roblox e giochi* un ritratto a dettaglio massimo (area 1140 × 640) richiede circa:
+*Contorni* 1 min 40 s, *Righe* 2 min 40 s, *Schizzo* 3 min. Con *Puntini* ogni puntino è
+un clic, quindi in 5 minuti ne fa circa 2.700: Disegno li ingrandisce da solo per starci.
 
 ## Consigli per ogni app
 
@@ -104,10 +117,12 @@ esattamente cosa resta.
 | **Paint** | Automatica (o Veloce) | Matita, spessore 1–2 px. Qualsiasi stile. |
 | **Photoshop, Krita, GIMP** | Automatica | Disattiva la stabilizzazione del tratto se è molto forte. |
 | **Siti web** (skribbl, Gartic…) | Automatica (o Siti web) | Stile Contorni o poco dettaglio. |
-| **Roblox** | Automatica (o Roblox e giochi) | Stile **Contorni** o dettaglio basso, spessore uguale al pennello del gioco, **stabilizzatore del gioco a 0**, zoom del foglio al 100%. Nei round a tempo usa **Tempo massimo**. Se il gioco non disegna niente prova **Movimento relativo**. |
+| **Roblox** | Automatica (o Roblox e giochi) | Stile **Righe** o **Schizzo**, spessore uguale al pennello del gioco, **stabilizzatore del gioco a 0**, zoom del foglio al 100%. Nei round a tempo usa **Tempo massimo** (300 s per 5 minuti). Se il gioco va a scatti scegli *Giochi lenti o che scattano*; se non disegna niente prova **Movimento relativo**. |
 
 Se il disegno perde dei pezzi o i tratti vengono uniti da righe, scegli una velocità più
-lenta (*Molto lenta*, o *Personalizzata* con un ritardo più alto). Se l'app è stata
+lenta (*Giochi lenti o che scattano* nei giochi, *Molto lenta* nelle altre app, o
+*Personalizzata*: con *Passo* 0 il mouse va da un angolo all'altro come nei giochi e il
+*Ritardo* è quanto resta fermo su ogni angolo). Se l'app è stata
 avviata **come amministratore**, avvia anche Disegno come amministratore, altrimenti
 Windows blocca il mouse simulato.
 
@@ -135,7 +150,7 @@ posizione della finestra dell'app. Se sposti o ridimensioni l'app, rifai «Selez
 
 **Nel gioco i tratti vengono uniti da righe lunghe** (il tasto sembra sempre premuto).
 Il gioco non ha fatto in tempo a vedere il rilascio del tasto: usa la velocità
-*Automatica* o *Roblox e giochi*; se succede ancora, *Molto lenta*.
+*Automatica* o *Roblox e giochi*; se succede ancora, *Giochi lenti o che scattano*.
 
 **Non disegna niente nel gioco.** Prova la velocità *Roblox e giochi* o *Molto lenta*, poi
 *Movimento relativo*. Assicurati che nel gioco sia selezionato lo strumento per disegnare.
@@ -143,22 +158,25 @@ Il gioco non ha fatto in tempo a vedere il rilascio del tasto: usa la velocità
 **Il disegno è troppo scuro / le linee si toccano.** Aumenta lo *spessore pennello* in
 Disegno fino a quello vero dell'app, oppure abbassa *Ombre* o *Dettaglio*.
 
-**Ci mette troppo.** Attiva *Tempo massimo*, usa lo stile *Contorni*, abbassa il dettaglio o
-scegli un'area più piccola. Il tempo stimato è sotto l'anteprima.
+**Ci mette troppo.** Attiva *Tempo massimo*: Disegno abbassa da solo il dettaglio per finire
+in tempo. Nei giochi lo stile *Righe* dà il risultato più dettagliato nello stesso tempo;
+*Contorni* è il più veloce. Il tempo stimato è sotto l'anteprima.
 
 ## Per sviluppatori
 
 Il programma è scritto in C++17 con le API Win32 (nessuna dipendenza esterna, exe di ~2 MB):
 
 ```
-src/core/     motore portatile: foto → tratti (contorni Canny, tratteggio, puntini),
-              ordine dei tratti, stima dei tempi, anteprima
+src/core/     motore portatile: foto → tratti (linee, tratteggio, righe, puntini),
+              ordine dei tratti, piano dei movimenti del mouse e stima dei tempi,
+              anteprima, simulatore di un gioco che guarda il mouse a ogni fotogramma
 src/win/      app Windows: interfaccia, libreria SQLite, lettura immagini (WIC),
               overlay per scegliere l'area, disegno col mouse (SendInput)
 installer/    pacchetto MSI (WiX)
 tests/        test del motore
-tools/        preview_cli (anteprima da riga di comando), testcanvas (tela per i test,
-              anche in modalità «gioco» che legge il mouse una volta per fotogramma)
+tools/        preview_cli (anteprima da riga di comando; con --sim mostra cosa vedrebbe un
+              gioco a N fps con scatti), testcanvas (tela per i test, anche in modalità
+              «gioco»: un ciclo a fotogrammi con scatti configurabili)
 ```
 
 Compilare exe e MSI da Linux (Ubuntu):
