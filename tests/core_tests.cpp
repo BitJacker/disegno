@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "core/calibrate.h"
 #include "core/image.h"
 #include "core/pipeline.h"
 #include "core/render.h"
@@ -291,7 +292,8 @@ void testPlan() {
     CHECK(steps.size() == 5);
     if (steps.size() == 5) {
         CHECK(!steps[0].down && steps[1].down && steps[2].down && steps[3].down && !steps[4].down);
-        CHECK(near(steps[0].ms, g.downDelayMs) && near(steps[1].ms, g.downDelayMs));
+        // Rest a frame at the start, then stay still after the press and after the release.
+        CHECK(near(steps[0].ms, g.moveDelayMs) && near(steps[1].ms, g.downDelayMs));
         CHECK(near(steps[2].ms, g.moveDelayMs) && near(steps[3].ms, g.moveDelayMs));
         CHECK(near(steps[4].at.x, 50) && near(steps[4].at.y, 10) && near(steps[4].ms, g.upDelayMs));
         // The game window is waited for after the press and the release only.
@@ -374,9 +376,11 @@ void testGameSimulation() {
         }
         return n;
     };
-    dz::Timing unsynced = dz::kTimingGame;
+    // Short pauses after each click, so that only the wait for the game makes the difference.
+    const dz::Timing quick{0, 34, 34, 4, false, true};
+    dz::Timing unsynced = quick;
     unsynced.sync = false;
-    const int withSync = strays(dz::kTimingGame), without = strays(unsynced);
+    const int withSync = strays(quick), without = strays(unsynced);
     std::printf("  stray lines in a freezing game: %d synced, %d not synced\n", withSync, without);
     CHECK(withSync == 0);
     CHECK(without > withSync);
@@ -387,6 +391,102 @@ void testGameSimulation() {
     dz::InkDiff same = dz::compareInk(line, line, 1), none = dz::compareInk(line, blank, 1);
     CHECK(same.missing == 0 && same.extra == 0);
     CHECK(near(float(none.missing), 1.f) && none.extra == 0);
+}
+
+void testClickLag() {
+    // A game that notices presses and releases up to 4 frames late but follows the mouse
+    // live: leaving right after a release draws the jump to the next stroke. The game
+    // presets stay still long enough after every press and release.
+    const dz::Gray pic = testPicture(300, 200);
+    dz::Params p;
+    p.style = dz::Style::Sketch;
+    p.detail = 8;
+    p.brush = 1;
+    const float W = 600, H = 400;
+    dz::FrameModel lag;
+    lag.jitter = 0.2;
+    lag.buttonLag = 4;
+    auto strays = [&](const dz::Timing& t) {
+        dz::Drawing d;
+        dz::buildDrawingFor(pic, W, H, p, t, 0, d);
+        dz::Gray want(int(W), int(H), 1.f);
+        dz::renderStrokes(want, d.strokes, 1.f, 0, 0, 1.f);
+        int n = 0;
+        for (uint32_t seed = 1; seed <= 5; ++seed) {
+            lag.seed = seed;
+            n += dz::countStrayLines(want, dz::simulateFrames(d.strokes, t, lag));
+        }
+        return n;
+    };
+    const int old = strays(dz::Timing{0, 34, 34, 4, false, true}), now = strays(dz::kTimingGame);
+    std::printf("  stray lines in a game that sees clicks 4 frames late: %d before, %d now\n", old, now);
+    CHECK(old > 0);
+    CHECK(now == 0);
+}
+
+void testSpareTime() {
+    // With time to spare the drawing slows down (safer) but still finishes in time.
+    const dz::Gray pic = testPicture(300, 200);
+    dz::Params p;
+    p.style = dz::Style::Outline;
+    p.brush = 1;
+    const dz::Timing g = dz::kTimingGame;
+    dz::Drawing free, roomy, tight;
+    CHECK(dz::buildDrawingFor(pic, 600, 400, p, g, 0, free));
+    CHECK(free.slow == 1.f);
+    const double need = dz::estimateSeconds(free.strokes, g);
+    CHECK(dz::buildDrawingFor(pic, 600, 400, p, g, need * 10, roomy));
+    CHECK(roomy.slow > 1.5f && roomy.slow <= 3.f);
+    CHECK(dz::estimateSeconds(roomy.strokes, dz::slowed(g, roomy.slow)) <= need * 10 + 1e-6);
+    CHECK(dz::buildDrawingFor(pic, 600, 400, p, g, need * 1.2, tight));
+    CHECK(tight.slow >= 1.f && tight.slow < 1.25f);
+    CHECK(dz::estimateSeconds(tight.strokes, dz::slowed(g, tight.slow)) <= need * 1.2 + 1e-6);
+}
+
+void testCalibration() {
+    const int w = 600, h = 400;
+    const dz::CalibPlan plan = dz::planCalibration(float(w), float(h), 2.f);
+    CHECK(int(plan.rows.size()) == dz::kCalibLevels);
+    float lastY = -1, lastMs = -1;
+    bool inside = true;
+    for (const auto& r : plan.rows) {
+        CHECK(r.y > lastY && r.clickMs > lastMs && r.dashes.size() >= 3);
+        lastY = r.y;
+        lastMs = r.clickMs;
+        CHECK(r.lead.x < r.dashes.front().pts.front().x);
+        for (const auto& d : r.dashes)
+            for (const auto& q : d.pts) inside &= q.x >= 0 && q.x < w && q.y >= 0 && q.y < h;
+    }
+    CHECK(inside);
+
+    // A fake screen: rows 0-1 joined into one line (releases seen late), row 3 with a dash
+    // missing its start (press seen late), the others clean.
+    std::vector<uint32_t> before(size_t(w) * h, 0xFFF5F0F0u), after = before;
+    auto line = [&](float x0, float x1, float y) {
+        for (int x = int(x0); x <= int(x1); ++x)
+            for (int dy = 0; dy < 2; ++dy) after[size_t(int(y) + dy) * w + size_t(x)] = 0xFF101010u;
+    };
+    for (size_t i = 0; i < plan.rows.size(); ++i) {
+        const auto& r = plan.rows[i];
+        for (size_t d = 0; d < r.dashes.size(); ++d) {
+            float xa = r.dashes[d].pts.front().x;
+            const float xb = r.dashes[d].pts.back().x;
+            if (i == 3 && d == 2) xa = (xa + xb) / 2;
+            line(xa, xb, r.y);
+            if (i < 2 && d + 1 < r.dashes.size()) line(xb, r.dashes[d + 1].pts.front().x, r.y);
+        }
+    }
+    const dz::CalibResult res = dz::analyzeCalibration(plan, before.data(), after.data(), w, h);
+    CHECK(res.sawInk && res.rows.size() == plan.rows.size());
+    if (res.rows.size() == 6) {
+        CHECK(!res.rows[0].clean && !res.rows[1].clean && res.rows[2].clean);
+        CHECK(!res.rows[3].clean && res.rows[4].clean && res.rows[5].clean);
+    }
+    CHECK(res.pick == 4);
+    CHECK(!dz::analyzeCalibration(plan, before.data(), before.data(), w, h).sawInk);
+    CHECK(dz::planCalibration(50, 40, 1).rows.empty());
+    // Slow games get longer rests on corners too, within limits.
+    CHECK(dz::calibTiming(20).moveDelayMs == 34.f && dz::calibTiming(150).moveDelayMs == 75.f);
 }
 
 void testRender() {
@@ -412,6 +512,9 @@ int main() {
     testFitBuilder();
     testPlan();
     testGameSimulation();
+    testClickLag();
+    testSpareTime();
+    testCalibration();
     testRender();
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);

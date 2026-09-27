@@ -1,5 +1,25 @@
 ## Disegno
 
+### Novità della 1.3
+
+- **Niente più righe che uniscono i tratti nei giochi.** Molti giochi (Roblox compreso) si
+  accorgono dei clic qualche fotogramma in ritardo, mentre seguono subito il mouse: la 1.2,
+  dopo ogni rilascio, ripartiva subito verso il tratto successivo e il gioco disegnava il
+  salto (le righe lunghe sul viso, dalla candela ai lati...). Ora il mouse resta fermo dopo
+  ogni clic e rilascio (70 ms con «Roblox e giochi», 110 ms con «Giochi lenti o che
+  scattano»).
+- **Calibra per questo gioco**: in mezzo minuto Disegno disegna 6 righe di trattini sempre
+  più lente, guarda lo schermo e sceglie da solo la velocità giusta per quel gioco
+  («Calibrata sul gioco»).
+- **Usa il tempo che avanza**: con il tempo massimo, se il disegno finirebbe prima, Disegno va
+  più piano (fino a 3 volte) per essere più preciso, e finisce comunque in tempo.
+- **Pannello laterale più chiaro**: ogni stile e ogni velocità spiegano cosa fanno, i campi
+  Ritardo/Passo compaiono solo con «Personalizzata» e sopra DISEGNA c'è il riepilogo (tratti,
+  tempo, dettaglio ridotto o rallentamento).
+- Con le pause nuove un disegno nei giochi richiede un po' più tempo che nella 1.2 (un ritratto
+  «Schizzo» a dettaglio massimo circa 4 minuti e mezzo): con il tempo massimo il dettaglio si
+  adatta da solo.
+
 ### Novità della 1.2
 
 - **Molto più veloce nei giochi**: in un round da 5 minuti ci sta un disegno dettagliato.

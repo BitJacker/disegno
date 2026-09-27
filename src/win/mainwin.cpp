@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "../core/calibrate.h"
 #include "../core/pipeline.h"
 #include "hotkeys.h"
 #include "imageio.h"
@@ -96,12 +97,17 @@ enum : int {
     ID_LBL_DELAY_MS,
     ID_LBL_STEP,
     ID_LBL_STEP_PX,
+    ID_STYLE_DESC,
+    ID_SPEED_DESC,
+    ID_CALIB,
+    ID_SPARE,
+    ID_INFO_MAIN,
     IDM_RENAME = 300,
     IDM_DELETE,
     IDM_EXPORT,
 };
 
-enum : UINT_PTR { TIMER_PROCESS = 1, TIMER_SAVE = 2, TIMER_SEARCH = 3 };
+enum : UINT_PTR { TIMER_PROCESS = 1, TIMER_SAVE = 2, TIMER_SEARCH = 3, TIMER_CALIB = 4 };
 
 struct SpeedPreset {
     const char* key;
@@ -109,8 +115,9 @@ struct SpeedPreset {
     dz::Timing timing;  // stepPx, moveDelayMs, downDelayMs, upDelayMs, jiggle
 };
 // Games such as Roblox read the mouse once per frame and join what they see with straight
-// lines: their presets jump from corner to corner and hold every state (each corner, the
-// press, the release) for about two frames, so a slow or dropped frame loses nothing.
+// lines: their presets jump from corner to corner, rest about two frames on every corner and
+// stay still long enough after each press and release for the game to notice it (many games
+// notice clicks a few frames late). "Calibrata" uses the pause measured by calibration.
 const SpeedPreset kSpeeds[] = {
     {"auto", L"Automatica  (consigliata)", dz::kTimingNormal},
     {"fast", L"Veloce  (Paint, Photoshop, Krita…)", dz::kTimingFast},
@@ -118,6 +125,7 @@ const SpeedPreset kSpeeds[] = {
     {"web", L"Siti web  (skribbl, Gartic…)", dz::kTimingWeb},
     {"game", L"Roblox e giochi", dz::kTimingGame},
     {"gameslow", L"Giochi lenti o che scattano", dz::kTimingGameSlow},
+    {"calib", L"Calibrata sul gioco", dz::kTimingGame},  // see currentTiming()
     {"slow", L"Molto lenta  (massima sicurezza)", dz::kTimingSlow},
     {"custom", L"Personalizzata", {6.f, 5.f, 20.f, 20.f, false}},
 };
@@ -129,6 +137,7 @@ enum : int {
     kWebSpeed,
     kGameSpeed,
     kGameSlowSpeed,
+    kCalibSpeed,
     kSlowSpeed,
     kCustomSpeed
 };
@@ -147,6 +156,16 @@ const wchar_t* kStyleNames[dz::kStyleCount] = {
 const char* kStyleKeys[dz::kStyleCount] = {"contorni", "schizzo", "tratteggio", "puntini", "righe"};
 
 enum class Phase { Idle, Picking, Countdown, Drawing };
+enum class JobKind { Drawing, Border, Calib };
+
+// Calibration in progress: a "before" picture, one mouse job per row, an "after" picture.
+struct Calibration {
+    bool active = false;
+    int stage = 0;  // 0 = about to take the "before" picture, 1 = drawing rows, 2 = "after" picture
+    size_t row = 0;
+    dz::CalibPlan plan;
+    std::vector<uint32_t> before;
+};
 enum class After { None, Draw };
 
 struct ProcJob {
@@ -180,7 +199,8 @@ struct App {
     HWND style{}, detail{}, detailVal{}, shade{}, shadeVal{}, brush{}, brushUd{}, invert{}, stretch{};
     HWND pick{}, secs{}, secsUd{}, areaInfo{}, showArea{}, testBorder{};
     HWND speed{}, delay{}, delayUd{}, step{}, stepUd{}, failsafe{}, relative{};
-    HWND limit{}, limitEdit{}, limitUd{}, lblLimitS{};
+    HWND limit{}, limitEdit{}, limitUd{}, lblLimitS{}, spare{};
+    HWND styleDesc{}, speedDesc{}, calib{}, infoMain{};
     HWND draw{}, hint{}, help{};
     HWND lblLibrary{}, lblStyle{}, lblDetail{}, lblShade{}, lblBrush{}, lblBrushPx{};
     HWND lblArea{}, lblSecs{}, lblSpeed{}, lblDelay{}, lblDelayMs{}, lblStep{}, lblStepPx{};
@@ -202,6 +222,8 @@ struct App {
     std::wstring targetName;
     bool limitOn = false;
     int limitSecs = 60;
+    bool spareOn = true;   // use the time left under the limit to draw slower and safer
+    float calibMs = 0;     // pause after clicks measured by calibration (0 = not yet)
     dz::Timing custom{6.f, 5.f, 20.f, 20.f, false};
     int seconds = 5;
     bool failsafeOn = true;
@@ -219,7 +241,10 @@ struct App {
     // Drawing
     Phase phase = Phase::Idle;
     std::vector<dz::Stroke> jobStrokes;
+    dz::Timing jobTiming;
+    JobKind jobKind = JobKind::Drawing;
     bool jobIsBorder = false;
+    Calibration cal;
     int64_t jobImageId = 0;
     ULONGLONG drawStart = 0;
     int drawTotal = 0;
@@ -391,16 +416,25 @@ dz::Timing currentTiming() {
     if (s == kCustomSpeed) {
         dz::Timing t = app.custom;
         if (t.stepPx <= 0) {
-            // Step 0: corner to corner like the game presets, the delay being the frame to survive.
+            // Step 0: corner to corner like the game presets; the delay is the pause after each
+            // press and release (corners get the same, up to 50 ms).
             const float frame = std::max(1.f, t.moveDelayMs);
-            return dz::Timing{0.f, frame, frame, dz::kTimingGame.upDelayMs, false, true};
+            return dz::Timing{0.f, std::min(frame, 50.f), frame, frame, false, true};
         }
         // Keep the button released for at least a couple of game frames between strokes.
         t.downDelayMs = t.upDelayMs = std::clamp(t.moveDelayMs * 2.5f, 25.f, 150.f);
         t.jiggle = t.moveDelayMs >= 12.f;
         return t;
     }
+    if (s == kCalibSpeed) return dz::calibTiming(app.calibMs > 0 ? app.calibMs : dz::kTimingGame.downDelayMs);
     return kSpeeds[s].timing;
+}
+
+// The timing a drawing is made with: slower when there is time to spare under the limit.
+dz::Timing drawingTiming(const dz::Drawing* d) {
+    const dz::Timing t = currentTiming();
+    if (d && app.limitOn && app.spareOn && d->slow > 1.01f) return dz::slowed(t, d->slow);
+    return t;
 }
 
 std::wstring lowerCase(std::wstring s) {
@@ -496,27 +530,43 @@ void updatePreview() {
     preview::setContent(app.preview, c);
 }
 
+// "1,8" (Italian decimal comma).
+std::wstring decimal(double v) {
+    wchar_t buf[32];
+    swprintf(buf, 32, L"%.1f", v);
+    std::wstring s = buf;
+    for (auto& c : s)
+        if (c == L'.') c = L',';
+    return s;
+}
+
+// Summary above DISEGNA: strokes and time, then what was done to fit the time.
 void updateInfo() {
-    std::wstring s;
+    std::wstring main, more;
     if (!app.gray) {
-        s = L"Nessuna foto selezionata";
+        main = L"Nessuna foto";
+        more = L"Apri o incolla una foto per iniziare.";
     } else if (!drawingIsCurrent()) {
-        s = L"Preparazione del disegno…";
+        main = L"Preparazione del disegno…";
     } else {
-        const size_t n = app.drawing->strokes.size();
-        const double sec = dz::estimateSeconds(app.drawing->strokes, currentTiming());
-        s = wu::formatInt(static_cast<long long>(n));
-        if (app.drawing->trimmed) s += L" di " + wu::formatInt(static_cast<long long>(app.drawing->fullCount));
-        s += L" tratti   ·   tempo stimato " + wu::formatDuration(sec);
-        if (app.limitOn) s += L" (massimo " + wu::formatDuration(app.limitSecs) + L")";
-        if (app.drawing->coarse > 1.01f)
-            s += L"   ·   dettaglio ridotto per stare nel tempo";
-        if (app.limitOn && app.params.style == dz::Style::Dots && app.drawing->coarse > 2.f)
-            s += L"   ·   con poco tempo prova lo stile «Righe»";
-        if (app.speedIndex == kAutoSpeed) s += L"   ·   velocità: " + std::wstring(kSpeeds[effectiveSpeed()].name);
-        if (!app.hasArea) s += L"   ·   scegli l'area per l'anteprima esatta";
+        const dz::Drawing& d = *app.drawing;
+        const double sec = dz::estimateSeconds(d.strokes, drawingTiming(&d));
+        main = wu::formatInt(static_cast<long long>(d.strokes.size())) + L" tratti   ·   " + wu::formatDuration(sec);
+        std::vector<std::wstring> notes;
+        if (app.limitOn) notes.push_back(L"massimo " + wu::formatDuration(app.limitSecs));
+        if (d.trimmed)
+            notes.push_back(L"tenuti i più importanti di " + wu::formatInt(static_cast<long long>(d.fullCount)));
+        else if (d.coarse > 1.01f)
+            notes.push_back(L"dettaglio ridotto per stare nel tempo");
+        if (app.limitOn && app.spareOn && d.slow > 1.05f)
+            notes.push_back(L"più lento e preciso per usare il tempo (×" + decimal(d.slow) + L")");
+        if (app.limitOn && app.params.style == dz::Style::Dots && d.coarse > 2.f)
+            notes.push_back(L"con poco tempo prova lo stile «Righe»");
+        if (!app.hasArea) notes.push_back(L"scegli l'area per l'anteprima esatta");
+        for (size_t i = 0; i < notes.size(); ++i) more += (i ? L"  ·  " : L"") + notes[i];
     }
-    setText(app.info, s);
+    setText(app.infoMain, main);
+    setText(app.info, more);
 }
 
 // The processing thread already fitted the drawing to the timing and time limit.
@@ -536,21 +586,56 @@ void updateAreaInfo() {
     EnableWindow(app.testBorder, app.hasArea);
 }
 
-void updateSpeedFields() {
+std::wstring msText(float ms) { return std::to_wstring(int(std::lround(ms))) + L" ms"; }
+
+// One or two lines under the speed list that say what the chosen speed does.
+std::wstring speedDescription() {
     const int eff = effectiveSpeed();
-    const dz::Timing t = eff == kCustomSpeed ? app.custom : kSpeeds[eff].timing;
-    app.loadingUi = true;
-    SendMessageW(app.delayUd, UDM_SETPOS32, 0, LPARAM(std::lround(t.moveDelayMs)));
-    SendMessageW(app.stepUd, UDM_SETPOS32, 0, LPARAM(std::lround(t.stepPx)));
-    app.loadingUi = false;
+    const dz::Timing t = currentTiming();
+    std::wstring s;
+    if (app.speedIndex == kAutoSpeed) {
+        s = L"Uso «" + std::wstring(kSpeeds[eff].name) + L"»";
+        if (app.target != Target::Unknown) s += L" per " + app.targetName;
+        s += L". ";
+    }
+    if (eff == kCalibSpeed && app.calibMs <= 0)
+        return s + L"Non ancora calibrata: premi «Calibra per questo gioco» (per ora come «Roblox e giochi»).";
+    if (t.stepPx <= 0)
+        s += L"Resta fermo " + msText(t.downDelayMs) + L" dopo ogni clic e rilascio, " + msText(t.moveDelayMs) +
+             L" su ogni angolo.";
+    else
+        s += L"Passi di " + std::to_wstring(int(std::lround(t.stepPx))) + L" px ogni " + msText(t.moveDelayMs) + L", " +
+             msText(t.downDelayMs) + L" su clic e rilascio.";
+    return s;
+}
+
+void updateSpeedFields() {
     const bool custom = app.speedIndex == kCustomSpeed;
-    EnableWindow(app.delay, custom);
-    EnableWindow(app.delayUd, custom);
-    EnableWindow(app.step, custom);
-    EnableWindow(app.stepUd, custom);
+    app.loadingUi = true;
+    SendMessageW(app.delayUd, UDM_SETPOS32, 0, LPARAM(std::lround(app.custom.moveDelayMs)));
+    SendMessageW(app.stepUd, UDM_SETPOS32, 0, LPARAM(std::lround(app.custom.stepPx)));
+    app.loadingUi = false;
+    // Delay and step are only for "Personalizzata"; the other speeds explain themselves.
+    for (HWND h : {app.lblDelay, app.delay, app.delayUd, app.lblDelayMs, app.lblStep, app.step, app.stepUd,
+                   app.lblStepPx})
+        ShowWindow(h, custom ? SW_SHOW : SW_HIDE);
+    ShowWindow(app.speedDesc, custom ? SW_HIDE : SW_SHOW);
+    setText(app.speedDesc, speedDescription());
+}
+
+const wchar_t* styleDescription(dz::Style st) {
+    switch (st) {
+        case dz::Style::Outline: return L"Solo le linee principali, come a matita. Il più veloce.";
+        case dz::Style::Sketch: return L"Linee principali e ombre a tratteggio incrociato.";
+        case dz::Style::Hatch: return L"Solo le ombre a tratteggio, come un'incisione.";
+        case dz::Style::Dots: return L"Puntini: il più fedele alla foto, ma un clic per puntino (lento nei giochi).";
+        case dz::Style::Lines: return L"La foto fatta di righe: tanto dettaglio anche nei giochi a tempo.";
+    }
+    return L"";
 }
 
 void updateValueLabels() {
+    setText(app.styleDesc, styleDescription(app.params.style));
     setText(app.detailVal, std::to_wstring(app.params.detail));
     setText(app.shadeVal, std::to_wstring(app.params.shading));
     const bool shadingUsed = app.params.style != dz::Style::Outline;
@@ -575,6 +660,8 @@ void syncControls() {
     SendMessageW(app.limitUd, UDM_SETPOS32, 0, app.limitSecs);
     EnableWindow(app.limitEdit, app.limitOn);
     EnableWindow(app.limitUd, app.limitOn);
+    Button_SetCheck(app.spare, app.spareOn ? BST_CHECKED : BST_UNCHECKED);
+    EnableWindow(app.spare, app.limitOn);
     app.loadingUi = false;
     updateSpeedFields();
     updateValueLabels();
@@ -635,6 +722,8 @@ void loadSettings() {
     }
     app.limitOn = settingInt("limit_on", 0, 0, 1) != 0;
     app.limitSecs = settingInt("limit_secs", 60, 5, 3600);
+    app.spareOn = settingInt("spare_on", 1, 0, 1) != 0;
+    app.calibMs = float(settingInt("calib_ms", 0, 0, 1000));
     app.custom.moveDelayMs = float(settingInt("custom_delay", 5, 0, 500));
     app.custom.stepPx = float(settingInt("custom_step", 6, 0, 100));
     app.seconds = settingInt("seconds", 5, 1, 30);
@@ -657,6 +746,8 @@ void saveSettingsNow() {
     app.lib.setSetting("speed", kSpeeds[app.speedIndex].key);
     app.lib.setSetting("limit_on", app.limitOn ? "1" : "0");
     app.lib.setSetting("limit_secs", std::to_string(app.limitSecs));
+    app.lib.setSetting("spare_on", app.spareOn ? "1" : "0");
+    app.lib.setSetting("calib_ms", std::to_string(int(std::lround(app.calibMs))));
     app.lib.setSetting("custom_delay", std::to_string(int(std::lround(app.custom.moveDelayMs))));
     app.lib.setSetting("custom_step", std::to_string(int(std::lround(app.custom.stepPx))));
     app.lib.setSetting("seconds", std::to_string(app.seconds));
@@ -748,7 +839,7 @@ void scheduleProcess(UINT delayMs = 200) {
     SetTimer(app.hwnd, TIMER_PROCESS, delayMs, nullptr);
 }
 
-void beginCountdown(bool border);
+void beginCountdown(JobKind kind);
 
 void onProcessed(uint64_t gen, dz::Drawing* d) {
     std::unique_ptr<dz::Drawing> result(d);
@@ -766,7 +857,7 @@ void onProcessed(uint64_t gen, dz::Drawing* d) {
     updateInfo();
     if (app.after == After::Draw && drawingIsCurrent()) {
         app.after = After::None;
-        beginCountdown(false);
+        beginCountdown(JobKind::Drawing);
     }
 }
 
@@ -1038,14 +1129,14 @@ std::vector<dz::Stroke> borderStrokes() {
     return {s};
 }
 
-void beginCountdown(bool border) {
+void beginCountdown(JobKind kind) {
     if (app.phase != Phase::Idle || !app.hasArea) return;
-    if (!border && !app.drawing) return;
+    if (kind == JobKind::Drawing && !app.drawing) return;
     const int speedBefore = effectiveSpeed();
     if (detectTarget()) {
         updateAreaInfo();
         updateSpeedFields();
-        if (!border && effectiveSpeed() != speedBefore) {
+        if (kind == JobKind::Drawing && effectiveSpeed() != speedBefore) {
             // Another kind of app is under the area now: rebuild for its timing, then start.
             app.after = After::Draw;
             setStatus(L"Preparo il disegno per " + app.targetName + L"…");
@@ -1053,18 +1144,197 @@ void beginCountdown(bool border) {
             return;
         }
     }
-    app.jobIsBorder = border;
+    app.jobKind = kind;
+    app.jobIsBorder = kind != JobKind::Drawing;
     app.jobImageId = app.currentId;
-    app.jobStrokes = border ? borderStrokes() : app.drawing->strokes;
-    app.drawEstimate = dz::estimateSeconds(app.jobStrokes, currentTiming());
+    app.jobStrokes.clear();
+    if (kind == JobKind::Border) app.jobStrokes = borderStrokes();
+    if (kind == JobKind::Drawing) app.jobStrokes = app.drawing->strokes;
+    app.jobTiming = kind == JobKind::Drawing ? drawingTiming(app.drawing.get()) : currentTiming();
+    app.drawEstimate = dz::estimateSeconds(app.jobStrokes, app.jobTiming);
     setPhase(Phase::Countdown);
-    setStatus(L"Il disegno parte tra " + std::to_wstring(app.seconds) + L" secondi (velocità «" +
-              kSpeeds[effectiveSpeed()].name + L"»)…");
+    if (kind == JobKind::Calib)
+        setStatus(L"La calibrazione parte tra " + std::to_wstring(app.seconds) + L" secondi…");
+    else
+        setStatus(L"Il disegno parte tra " + std::to_wstring(app.seconds) + L" secondi (velocità «" +
+                  kSpeeds[effectiveSpeed()].name + L"»)…");
     // Give focus to the app under the area while we are still allowed to, then get out of the way.
     POINT c{(app.area.left + app.area.right) / 2, (app.area.top + app.area.bottom) / 2};
     if (HWND target = windowAt(c)) SetForegroundWindow(target);
     ShowWindow(app.hwnd, SW_MINIMIZE);
     overlay::countdown(app.hwnd, app.area, app.seconds);
+}
+
+// ---------------------------------------------------------------------------
+// Calibration
+// ---------------------------------------------------------------------------
+
+POINT areaPoint(dz::Pt p) {
+    return POINT{app.area.left + LONG(std::floor(p.x)), app.area.top + LONG(std::floor(p.y))};
+}
+
+HWND areaInputWindow() {
+    return inputWindowAt(POINT{(app.area.left + app.area.right) / 2, (app.area.top + app.area.bottom) / 2});
+}
+
+void onCalibClicked() {
+    if (app.phase != Phase::Idle) return;
+    if (!app.hasArea) {
+        message(L"Prima scegli l'area con «Seleziona area»: un foglio vuoto nel gioco.");
+        return;
+    }
+    float w = 0, h = 0;
+    areaSize(w, h);
+    dz::CalibPlan plan = dz::planCalibration(w, h, app.params.brush);
+    if (plan.rows.empty()) {
+        message(L"L'area è troppo piccola per la calibrazione: scegline una più grande (almeno 200 × 160 px).");
+        return;
+    }
+    if (MessageBoxW(app.hwnd,
+                    L"CALIBRAZIONE PER IL GIOCO\n\n"
+                    L"Disegno farà 6 righe di trattini nell'area scelta, ogni riga un po' più lenta, poi guarderà lo "
+                    L"schermo per capire quanto il gioco è lento a vedere i clic, e sceglierà la velocità giusta.\n\n"
+                    L"•  Nel gioco scegli la matita e lo spessore che userai.\n"
+                    L"•  L'area deve essere vuota (dopo puoi cancellare i trattini).\n"
+                    L"•  Non toccare il mouse: dura circa mezzo minuto.\n\nPronto?",
+                    kAppTitle, MB_OKCANCEL | MB_ICONINFORMATION) != IDOK)
+        return;
+    app.cal = Calibration{};
+    app.cal.plan = std::move(plan);
+    beginCountdown(JobKind::Calib);
+}
+
+void finishCalibration(const std::wstring& title, const std::wstring& text, bool success) {
+    KillTimer(app.hwnd, TIMER_CALIB);
+    app.cal.active = false;
+    app.cal.before.clear();
+    setPhase(Phase::Idle);
+    overlay::setStatus(title, L"", 1, !success);
+    overlay::hideStatus(2500);
+    bringToFront();
+    setStatus(title);
+    message(text, success ? MB_ICONINFORMATION : MB_ICONWARNING);
+}
+
+void startCalibRow() {
+    const dz::CalibRow& r = app.cal.plan.rows[app.cal.row];
+    auto* job = new DrawJob();
+    job->strokes = r.dashes;
+    job->origin = POINT{app.area.left, app.area.top};
+    job->timing = dz::calibTiming(r.clickMs);
+    job->failsafe = app.failsafeOn;
+    job->relative = app.relativeOn;
+    job->syncWindow = areaInputWindow();
+    // Wait away from the dashes first, so every row starts after a calm moment...
+    job->hasLead = true;
+    job->lead = areaPoint(r.lead);
+    job->leadMs = 350;
+    // ...and stay put after the last dash, so the game sees the release before the next row.
+    job->tailMs = 400;
+    job->notify = app.hwnd;
+    app.drawTotal = int(job->strokes.size());
+    app.drawDone = 0;
+    if (!mouse::start(job)) {
+        finishCalibration(L"Calibrazione non riuscita", L"Non riesco a muovere il mouse.", false);
+        return;
+    }
+    const size_t n = app.cal.plan.rows.size();
+    overlay::setStatus(L"Calibrazione…  riga " + std::to_wstring(app.cal.row + 1) + L" di " + std::to_wstring(n),
+                       L"Non toccare il mouse   ·   ESC = ferma", double(app.cal.row) / double(n), false);
+}
+
+void startCalibration() {
+    app.cal.active = true;
+    app.cal.stage = 0;
+    app.cal.row = 0;
+    setPhase(Phase::Drawing);
+    // Park the mouse where no dash goes and let the game settle before the "before" picture.
+    const POINT p = areaPoint(app.cal.plan.rows[0].lead);
+    SetCursorPos(p.x, p.y);
+    overlay::showStatus(app.area);
+    overlay::setStatus(L"Calibrazione…", L"Non toccare il mouse   ·   ESC = ferma", 0, false);
+    setStatus(L"Calibrazione in corso…  ESC = ferma");
+    SetTimer(app.hwnd, TIMER_CALIB, 500, nullptr);
+}
+
+void onCalibRowDone(DrawResult result) {
+    if (result != DrawResult::Completed) {
+        finishCalibration(L"Calibrazione fermata",
+                          result == DrawResult::UserMoved ? L"Calibrazione fermata: hai mosso il mouse."
+                                                          : L"Calibrazione fermata.",
+                          false);
+        return;
+    }
+    if (++app.cal.row < app.cal.plan.rows.size()) {
+        startCalibRow();
+        return;
+    }
+    // All rows drawn: back to where the mouse was for the first picture, then let the game catch up.
+    const POINT p = areaPoint(app.cal.plan.rows[0].lead);
+    SetCursorPos(p.x, p.y);
+    app.cal.stage = 2;
+    overlay::setStatus(L"Calibrazione…  guardo il risultato", L"Non toccare il mouse", 1, false);
+    SetTimer(app.hwnd, TIMER_CALIB, 900, nullptr);
+}
+
+void analyzeCalibration(const std::vector<uint32_t>& after) {
+    const int w = app.area.right - app.area.left, h = app.area.bottom - app.area.top;
+    if (app.cal.before.empty() || after.size() != app.cal.before.size()) {
+        finishCalibration(L"Calibrazione non riuscita",
+                          L"Non riesco a guardare lo schermo. Scegli a mano la velocità: «Roblox e giochi», oppure "
+                          L"«Giochi lenti o che scattano» se vedi ancora tratti uniti.",
+                          false);
+        return;
+    }
+    const dz::CalibResult res = dz::analyzeCalibration(app.cal.plan, app.cal.before.data(), after.data(), w, h);
+    if (!res.sawInk) {
+        finishCalibration(L"Calibrazione non riuscita",
+                          L"Non vedo i trattini sullo schermo: il gioco non ha disegnato niente (è scelta la matita? "
+                          L"il foglio è nell'area?), oppure lo schermo non si può guardare.\n\nRiprova, oppure scegli "
+                          L"a mano «Roblox e giochi» o «Giochi lenti o che scattano».",
+                          false);
+        return;
+    }
+    std::wstring rows;
+    for (size_t i = 0; i < res.rows.size(); ++i) {
+        const auto& r = res.rows[i];
+        rows += L"\n   " + msText(app.cal.plan.rows[i].clickMs) + L":  " +
+                (r.clean ? L"pulita" : r.stray > 0.2 ? L"tratti uniti" : L"tratti incompleti");
+    }
+    float ms = 200.f;
+    std::wstring text;
+    if (res.pick < 0) {
+        text = L"Anche la riga più lenta ha dei difetti: il gioco è molto lento a vedere i clic. Userò " +
+               msText(ms) + L" dopo ogni clic e rilascio. Se non basta prova «Movimento relativo».";
+    } else {
+        ms = std::min(250.f, app.cal.plan.rows[size_t(res.pick)].clickMs * 1.2f);
+        text = L"Fatto! Le righe escono pulite da " + msText(app.cal.plan.rows[size_t(res.pick)].clickMs) +
+               L" in su. Userò " + msText(ms) + L" dopo ogni clic e rilascio (velocità «Calibrata sul gioco»).";
+    }
+    text += L"\n\nRighe:" + rows + L"\n\nAdesso puoi cancellare i trattini nel gioco.";
+    app.calibMs = ms;
+    app.speedIndex = kCalibSpeed;
+    SendMessageW(app.speed, CB_SETCURSEL, WPARAM(app.speedIndex), 0);
+    updateSpeedFields();
+    saveSettingsLater();
+    scheduleProcess(50);  // the timing shapes the drawing
+    finishCalibration(res.pick < 0 ? L"Calibrazione: gioco molto lento" : L"Calibrazione fatta", text, res.pick >= 0);
+}
+
+void onCalibTimer() {
+    KillTimer(app.hwnd, TIMER_CALIB);
+    if (!app.cal.active) return;
+    if (hotkeys::takeStop()) {
+        finishCalibration(L"Calibrazione fermata", L"Calibrazione fermata.", false);
+        return;
+    }
+    if (app.cal.stage == 0) {
+        app.cal.before = wu::captureScreen(app.area);
+        app.cal.stage = 1;
+        startCalibRow();
+    } else if (app.cal.stage == 2) {
+        analyzeCalibration(wu::captureScreen(app.area));
+    }
 }
 
 void onDrawClicked() {
@@ -1074,6 +1344,10 @@ void onDrawClicked() {
             overlay::cancel();
             return;
         case Phase::Drawing:
+            if (app.cal.active && !mouse::running()) {
+                finishCalibration(L"Calibrazione fermata", L"Calibrazione fermata.", false);
+                return;
+            }
             mouse::requestStop();
             return;
         case Phase::Idle:
@@ -1102,7 +1376,7 @@ void onDrawClicked() {
         message(L"Con queste impostazioni non c'è niente da disegnare.\nProva ad aumentare il dettaglio o le ombre.");
         return;
     }
-    beginCountdown(false);
+    beginCountdown(JobKind::Drawing);
 }
 
 void onCountdownDone(bool ok) {
@@ -1110,17 +1384,21 @@ void onCountdownDone(bool ok) {
         setPhase(Phase::Idle);
         app.jobStrokes.clear();
         bringToFront();
-        setStatus(L"Disegno annullato.");
+        setStatus(app.jobKind == JobKind::Calib ? L"Calibrazione annullata." : L"Disegno annullato.");
+        return;
+    }
+    if (app.jobKind == JobKind::Calib) {
+        startCalibration();
         return;
     }
     auto* job = new DrawJob();
     job->strokes = std::move(app.jobStrokes);
     app.jobStrokes.clear();
     job->origin = POINT{app.area.left, app.area.top};
-    job->timing = currentTiming();
+    job->timing = app.jobTiming;
     job->failsafe = app.failsafeOn;
     job->relative = app.relativeOn;
-    job->syncWindow = inputWindowAt(POINT{(app.area.left + app.area.right) / 2, (app.area.top + app.area.bottom) / 2});
+    job->syncWindow = areaInputWindow();
     job->notify = app.hwnd;
     app.drawTotal = int(job->strokes.size());
     app.drawDone = 0;
@@ -1162,6 +1440,10 @@ void onDrawPaused(bool paused) {
 }
 
 void onDrawDone(DrawResult result, int done) {
+    if (app.cal.active) {
+        onCalibRowDone(result);
+        return;
+    }
     setPhase(Phase::Idle);
     const double elapsed = double(GetTickCount64() - app.drawStart) / 1000.0;
     const double frac = app.drawTotal > 0 ? double(done) / app.drawTotal : 1;
@@ -1206,11 +1488,13 @@ void showHelp() {
         L"F5 = disegna      F6 = seleziona area      Ctrl+V = incolla foto\n\n"
         L"CONSIGLI\n"
         L"•  La velocità «Automatica» riconosce Paint, i browser e Roblox e sceglie i tempi giusti.\n"
-        L"•  Roblox e altri giochi leggono il mouse una volta per fotogramma: usa «Automatica» (o «Roblox "
-        L"e giochi»), stile «Righe» o «Schizzo», e lo spessore uguale al pennello del gioco. Se il gioco "
-        L"va a scatti o sotto i 45 fps scegli «Giochi lenti o che scattano».\n"
-        L"•  Giochi a tempo: attiva «Tempo massimo» (300 s per un round da 5 minuti) e Disegno abbassa il "
-        L"dettaglio quanto basta per finire in tempo.\n"
+        L"•  Roblox e altri giochi guardano il mouse una volta per fotogramma e spesso vedono i clic in "
+        L"ritardo: con «Roblox e giochi» il mouse resta fermo dopo ogni clic e rilascio, così i tratti non si "
+        L"uniscono. Se vedi ancora righe che uniscono i tratti, premi «Calibra per questo gioco»: Disegno prova "
+        L"da solo e trova la velocità giusta per quel gioco.\n"
+        L"•  Giochi a tempo: attiva «Tempo massimo» (300 s per un round da 5 minuti). Disegno abbassa il "
+        L"dettaglio quanto basta per finire in tempo e, se avanza tempo, va più piano per essere più preciso.\n"
+        L"•  Nei giochi a tempo lo stile «Righe» dà tanto dettaglio; «Schizzo» è ottimo per ritratti e disegni.\n"
         L"•  Se un gioco ignora il mouse prova «Movimento relativo».\n"
         L"•  Se l'app di disegno è avviata come amministratore, avvia anche Disegno come amministratore.");
 }
@@ -1255,13 +1539,16 @@ void layout() {
     }
 
     // Right: settings
+    int centreBottom = bottom;
     {
         const int rx = W - app.rightW + pad, rw = app.rightW - 2 * pad;
         int y = top + S(10);
         put(app.lblStyle, rx, y, rw, S(18));
         y += S(20);
         put(app.style, rx, y, rw, S(300));
-        y += S(30);
+        y += S(28);
+        put(app.styleDesc, rx, y, rw, S(30));
+        y += S(32);
         const int lw = S(76), vw = S(26);
         put(app.lblDetail, rx, y + S(4), lw, S(20));
         put(app.detail, rx + lw, y, rw - lw - vw, S(26));
@@ -1270,63 +1557,79 @@ void layout() {
         put(app.lblShade, rx, y + S(4), lw, S(20));
         put(app.shade, rx + lw, y, rw - lw - vw, S(26));
         put(app.shadeVal, rx + rw - vw, y + S(4), vw, S(20));
-        y += S(30);
+        y += S(29);
         put(app.lblBrush, rx, y + S(4), S(150), S(20));
         put(app.brush, rx + S(152), y, S(64), S(24));
         put(app.lblBrushPx, rx + S(222), y + S(4), S(30), S(20));
-        y += S(28);
+        y += S(27);
         put(app.invert, rx, y, rw / 2, S(22));
         put(app.stretch, rx + rw / 2, y, rw - rw / 2, S(22));
-        y += S(26);
+        y += S(25);
         app.sepY[0] = y;
-        y += S(10);
+        y += S(9);
 
         put(app.lblArea, rx, y, rw, S(18));
         y += S(20);
         put(app.pick, rx, y, rw - S(96), S(30));
         put(app.secs, rx + rw - S(88), y + S(3), S(58), S(24));
         put(app.lblSecs, rx + rw - S(26), y + S(7), S(26), S(20));
-        y += S(34);
+        y += S(33);
         put(app.areaInfo, rx, y, rw, S(20));
-        y += S(22);
+        y += S(21);
         int bw = (rw - S(6)) / 2;
         put(app.showArea, rx, y, bw, S(26));
         put(app.testBorder, rx + bw + S(6), y, rw - bw - S(6), S(26));
-        y += S(32);
+        y += S(31);
         app.sepY[1] = y;
-        y += S(10);
+        y += S(9);
 
         put(app.lblSpeed, rx, y, rw, S(18));
         y += S(20);
         put(app.speed, rx, y, rw, S(300));
-        y += S(30);
+        y += S(28);
+        // Same slot: the explanation of the speed, or delay and step for "Personalizzata".
+        put(app.speedDesc, rx, y, rw, S(30));
         put(app.lblDelay, rx, y + S(4), S(54), S(20));
         put(app.delay, rx + S(56), y, S(60), S(24));
         put(app.lblDelayMs, rx + S(120), y + S(4), S(26), S(20));
         put(app.lblStep, rx + S(156), y + S(4), S(48), S(20));
         put(app.step, rx + S(206), y, S(60), S(24));
         put(app.lblStepPx, rx + S(270), y + S(4), S(24), S(20));
-        y += S(28);
+        y += S(32);
+        put(app.calib, rx, y, rw, S(26));
+        y += S(31);
         put(app.limit, rx, y + S(1), S(118), S(22));
         put(app.limitEdit, rx + S(120), y, S(62), S(24));
         put(app.lblLimitS, rx + S(188), y + S(4), rw - S(188), S(20));
-        y += S(28);
+        y += S(26);
+        put(app.spare, rx + S(18), y, rw - S(18), S(22));
+        y += S(24);
         put(app.failsafe, rx, y, rw, S(22));
         y += S(22);
         put(app.relative, rx, y, rw, S(22));
         y += S(28);
 
-        const int drawH = S(46);
-        int dy = std::max(y, bottom - pad - S(20) - drawH);
+        // DISEGNA at the bottom; the summary in the space above it, or under the preview when
+        // the window is too short.
+        const int drawH = S(46), hintH = S(18);
+        const int dy = std::max(y, bottom - pad - hintH - S(3) - drawH);
         put(app.draw, rx, dy, rw, drawH);
-        put(app.hint, rx, dy + drawH + S(3), rw, S(18));
+        put(app.hint, rx, dy + drawH + S(3), rw, hintH);
+        if (dy - y >= S(66)) {
+            put(app.infoMain, rx, dy - S(64), rw, S(22));
+            put(app.info, rx, dy - S(40), rw, S(34));
+        } else {
+            const int cx = app.leftW + pad, cw = W - app.leftW - app.rightW - 2 * pad;
+            centreBottom = bottom - S(34);
+            put(app.infoMain, cx, centreBottom + S(8), cw / 3, S(22));
+            put(app.info, cx + cw / 3, centreBottom + S(10), cw - cw / 3, S(22));
+        }
     }
 
-    // Centre: preview + info line
+    // Centre: preview
     {
         const int cx = app.leftW, cw = W - app.leftW - app.rightW;
-        put(app.preview, cx + 1, top, cw - 1, bottom - top - S(34));
-        put(app.info, cx + pad, bottom - S(28), cw - 2 * pad, S(22));
+        put(app.preview, cx + 1, top, cw - 1, centreBottom - top);
     }
     EndDeferWindowPos(dw);
     // Up-down controls follow their buddies only when re-attached.
@@ -1469,7 +1772,8 @@ void applyFonts() {
     EnumChildWindows(
         app.hwnd,
         [](HWND h, LPARAM) -> BOOL {
-            HFONT f = isSection(GetDlgCtrlID(h)) ? app.fontSection : app.font;
+            const int id = GetDlgCtrlID(h);
+            HFONT f = isSection(id) ? app.fontSection : id == ID_INFO_MAIN ? app.fontBold : app.font;
             SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(f), TRUE);
             return TRUE;
         },
@@ -1504,11 +1808,13 @@ void createControls() {
     // Preview
     app.preview = preview::create(app.hwnd, ID_PREVIEW);
     app.info = makeLabel(L"", ID_INFO);
+    app.infoMain = makeLabel(L"", ID_INFO_MAIN, SS_LEFT | SS_ENDELLIPSIS);
 
     // Style
     app.lblStyle = makeLabel(L"1   STILE DEL DISEGNO", ID_LBL_STYLE);
     app.style = makeCtl(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, ID_STYLE);
     for (const wchar_t* n : kStyleNames) SendMessageW(app.style, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
+    app.styleDesc = makeLabel(L"", ID_STYLE_DESC);
     app.lblDetail = makeLabel(L"Dettaglio", ID_LBL_DETAIL);
     app.detail = makeCtl(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, ID_DETAIL);
     SendMessageW(app.detail, TBM_SETRANGE, TRUE, MAKELPARAM(1, 10));
@@ -1538,6 +1844,8 @@ void createControls() {
     app.lblSpeed = makeLabel(L"3   VELOCITÀ", ID_LBL_SPEED);
     app.speed = makeCtl(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, ID_SPEED);
     for (const SpeedPreset& sp : kSpeeds) SendMessageW(app.speed, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(sp.name));
+    app.speedDesc = makeLabel(L"", ID_SPEED_DESC);
+    app.calib = makeCtl(L"BUTTON", L"Calibra per questo gioco", BS_PUSHBUTTON | WS_TABSTOP, ID_CALIB);
     app.lblDelay = makeLabel(L"Ritardo", ID_LBL_DELAY);
     app.delay = makeCtl(L"EDIT", L"", ES_NUMBER | WS_TABSTOP, ID_DELAY, WS_EX_CLIENTEDGE);
     app.delayUd = makeUpDown(ID_DELAY_UD, app.delay, 0, 500, 5);
@@ -1554,6 +1862,7 @@ void createControls() {
     app.limitEdit = makeCtl(L"EDIT", L"60", ES_NUMBER | WS_TABSTOP, ID_LIMIT_SECS, WS_EX_CLIENTEDGE);
     app.limitUd = makeUpDown(ID_LIMIT_UD, app.limitEdit, 5, 3600, 60);
     app.lblLimitS = makeLabel(L"s  (giochi a tempo)", ID_LBL_LIMIT_S);
+    app.spare = makeCtl(L"BUTTON", L"Usa il tempo che avanza (più preciso)", BS_AUTOCHECKBOX | WS_TABSTOP, ID_SPARE);
 
     app.draw = makeCtl(L"BUTTON", L"DISEGNA", BS_OWNERDRAW | WS_TABSTOP, ID_DRAW);
     app.hint = makeLabel(L"ESC = ferma   ·   F8 = pausa / riprendi", ID_HINT, SS_CENTER);
@@ -1596,6 +1905,11 @@ void createControls() {
                       L"secondi indicati (se non basta, toglie prima i pezzettini e le ombre). Utile nei giochi a "
                       L"tempo: per un round da 5 minuti scrivi 300.");
     addTip(app.limitEdit, L"Secondi a disposizione per il disegno.");
+    addTip(app.spare, L"Se il disegno sta nel tempo massimo e avanza tempo, Disegno va più piano (fino a 3 volte): "
+                      L"il gioco vede meglio ogni clic, rilascio e angolo. Finisce comunque entro il tempo.");
+    addTip(app.calib, L"Disegna 6 righe di trattini nell'area scelta, ogni riga un po' più lenta, poi guarda lo "
+                      L"schermo per capire quanto il gioco è lento a vedere i clic, e sceglie la velocità giusta "
+                      L"(«Calibrata sul gioco»). Usa un foglio vuoto: dopo puoi cancellare i trattini.");
 }
 
 // ---------------------------------------------------------------------------
@@ -1622,7 +1936,7 @@ void onCommand(int id, int code, HWND ctl) {
             if (app.hasArea) overlay::flashArea(app.area, 1600);
             break;
         case ID_TEST_BORDER:
-            if (app.phase == Phase::Idle && app.hasArea) beginCountdown(true);
+            if (app.phase == Phase::Idle && app.hasArea) beginCountdown(JobKind::Border);
             break;
         case ID_DRAW:
             onDrawClicked();
@@ -1692,8 +2006,17 @@ void onCommand(int id, int code, HWND ctl) {
             app.limitOn = Button_GetCheck(app.limit) == BST_CHECKED;
             EnableWindow(app.limitEdit, app.limitOn);
             EnableWindow(app.limitUd, app.limitOn);
+            EnableWindow(app.spare, app.limitOn);
             saveSettingsLater();
             scheduleProcess(50);
+            break;
+        case ID_SPARE:
+            app.spareOn = Button_GetCheck(app.spare) == BST_CHECKED;
+            updateInfo();
+            saveSettingsLater();
+            break;
+        case ID_CALIB:
+            onCalibClicked();
             break;
         case ID_LIMIT_SECS:
             if (code == EN_CHANGE && !app.loadingUi) {
@@ -1829,7 +2152,7 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_GETMINMAXINFO: {
             auto* mm = reinterpret_cast<MINMAXINFO*>(lp);
             mm->ptMinTrackSize.x = S(1000);
-            mm->ptMinTrackSize.y = S(660);
+            mm->ptMinTrackSize.y = S(700);
             return 0;
         }
         case WM_DPICHANGED: {
@@ -1861,7 +2184,8 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HDC dc = reinterpret_cast<HDC>(wp);
             int id = GetDlgCtrlID(reinterpret_cast<HWND>(lp));
             SetBkColor(dc, RGB(255, 255, 255));
-            bool muted = isSection(id) || id == ID_HINT || id == ID_AREA_INFO || id == ID_INFO;
+            bool muted = isSection(id) || id == ID_HINT || id == ID_AREA_INFO || id == ID_INFO || id == ID_STYLE_DESC ||
+                         id == ID_SPEED_DESC;
             SetTextColor(dc, muted ? kMuted : kText);
             return reinterpret_cast<LRESULT>(app.brWhite);
         }
@@ -1889,6 +2213,7 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return onNotify(reinterpret_cast<NMHDR*>(lp));
         case WM_TIMER:
             if (wp == TIMER_PROCESS) startProcess();
+            else if (wp == TIMER_CALIB) onCalibTimer();
             else if (wp == TIMER_SAVE) saveSettingsNow();
             else if (wp == TIMER_SEARCH) {
                 KillTimer(hwnd, TIMER_SEARCH);

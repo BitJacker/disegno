@@ -9,9 +9,12 @@ programma in cui si disegna tenendo premuto il tasto sinistro del mouse.
 
 ![Disegno](docs/screenshot.png)
 
-Questo disegno è stato fatto interamente dal mouse, guidato da Disegno:
+Questo ritratto di Nikola Tesla è stato fatto interamente dal mouse, guidato da Disegno, in
+circa 4 minuti e mezzo (con *Tempo massimo* a 5 minuti), su una tela di prova che si comporta
+come un gioco di Roblox: guarda il mouse una volta per fotogramma e vede i clic con 60 ms di
+ritardo.
 
-![Risultato disegnato col mouse](docs/esempio-disegnato-col-mouse.png)
+![Tesla disegnato col mouse](docs/esempio-disegnato-col-mouse.png)
 
 ## Scarica
 
@@ -49,6 +52,9 @@ Funziona su Windows 10 e 11 (64 bit). Non servono altri programmi.
 Il pulsante **Prova: disegna il bordo** disegna solo il contorno dell'area: utile per
 controllare di aver scelto il posto giusto prima di un disegno lungo.
 
+Nei giochi, la prima volta premi anche **Calibra per questo gioco** (vedi sotto): in mezzo
+minuto Disegno capisce da solo quanto andare piano perché i tratti non si uniscano.
+
 ### Tasti
 
 | Tasto | Cosa fa |
@@ -85,30 +91,46 @@ Per sicurezza, se **muovi il mouse** mentre disegna, Disegno si ferma da solo
 
 Con **Automatica** (consigliata) Disegno guarda quale app c'è sotto l'area scelta e usa i
 tempi giusti: *Veloce* per Paint e i programmi di disegno, *Siti web* per i browser,
-*Roblox e giochi* per Roblox, *Normale* per tutto il resto. L'app riconosciuta compare
-sotto «Seleziona area».
+*Roblox e giochi* per Roblox, *Normale* per tutto il resto. Sotto la lista c'è scritto
+cosa fa la velocità scelta.
 
 Perché i giochi sono diversi: Roblox (e molti giochi) guarda il mouse una volta per
-fotogramma, circa ogni 16 millesimi di secondo, e unisce con una riga dritta le posizioni
-che vede. Se in quel momento si perde un rilascio del tasto, due tratti restano attaccati da
-una riga; se si perde un angolo, la linea taglia la curva. Con *Roblox e giochi*:
+fotogramma e unisce con una riga dritta le posizioni che vede. In più spesso si accorge dei
+clic **qualche fotogramma in ritardo**, mentre il mouse lo segue subito: se dopo un rilascio
+il mouse parte subito verso il tratto successivo, il gioco crede che il tasto sia ancora
+premuto e disegna il salto (le righe lunghe che attraversano il disegno). Con *Roblox e
+giochi*:
 
-- il mouse salta da un angolo all'altro del tratto (niente passettini inutili) e resta fermo
-  su ogni angolo, sul clic e sul rilascio per circa **due fotogrammi**, così anche un
-  fotogramma perso non rovina niente;
-- dopo ogni clic e ogni rilascio Disegno **aspetta che il gioco li abbia visti**: se il gioco
-  si blocca per un attimo, Disegno lo aspetta invece di andare avanti.
+- dopo ogni clic e ogni rilascio il mouse **resta fermo 70 ms**, così il gioco se ne accorge
+  prima che il mouse si sposti;
+- il mouse salta da un angolo all'altro del tratto e resta fermo su ogni angolo circa **due
+  fotogrammi**, così un fotogramma perso non taglia le curve;
+- dopo ogni clic e rilascio Disegno **aspetta che il gioco li abbia presi**: se il gioco si
+  blocca per un attimo, Disegno lo aspetta.
 
-Se il gioco va a scatti o sotto i 45 fps, scegli **Giochi lenti o che scattano**.
+Per i giochi più lenti c'è **Giochi lenti o che scattano** (110 ms).
 
-**Tempo massimo**: nei giochi a tempo attivalo e scrivi i secondi a disposizione (300 per un
-round da 5 minuti). Se il disegno ci metterebbe di più, Disegno **abbassa il dettaglio quanto
-basta** per finire in tempo; solo se non basta toglie i pezzettini e le ombre meno
-importanti. L'anteprima mostra esattamente cosa verrà disegnato.
+### Calibra per questo gioco
+
+Ogni gioco (e ogni computer) è diverso. Scegli l'area su un foglio vuoto e premi **Calibra per
+questo gioco**: Disegno fa 6 righe di trattini, ognuna con una pausa più lunga dopo i clic, poi
+guarda lo schermo e vede quali righe sono uscite pulite (trattini separati e completi). Sceglie
+la più veloce tra quelle pulite, con un po' di margine, e passa alla velocità **Calibrata sul
+gioco**. Poi puoi cancellare i trattini nel gioco.
+
+### Tempo massimo
+
+Nei giochi a tempo attivalo e scrivi i secondi a disposizione (**300** per un round da 5
+minuti). Se il disegno ci metterebbe di più, Disegno **abbassa il dettaglio quanto basta**
+per finire in tempo; solo se non basta toglie i pezzettini e le ombre meno importanti. Se
+invece **avanza tempo**, con *Usa il tempo che avanza* Disegno va più piano (fino a 3
+volte): il gioco vede meglio ogni clic, rilascio e angolo, e il disegno finisce comunque
+entro il tempo. L'anteprima mostra esattamente cosa verrà disegnato e il riepilogo sopra
+DISEGNA dice quanto ci metterà.
 
 Con *Roblox e giochi* un ritratto a dettaglio massimo (area 1140 × 640) richiede circa:
-*Contorni* 1 min 40 s, *Righe* 2 min 40 s, *Schizzo* 3 min. Con *Puntini* ogni puntino è
-un clic, quindi in 5 minuti ne fa circa 2.700: Disegno li ingrandisce da solo per starci.
+*Contorni* 3 min, *Schizzo* 4 min 30 s, *Righe* 4 min 40 s. Con *Puntini* ogni puntino è
+un clic: con poco tempo Disegno li ingrandisce da solo per starci.
 
 ## Consigli per ogni app
 
@@ -117,12 +139,12 @@ un clic, quindi in 5 minuti ne fa circa 2.700: Disegno li ingrandisce da solo pe
 | **Paint** | Automatica (o Veloce) | Matita, spessore 1–2 px. Qualsiasi stile. |
 | **Photoshop, Krita, GIMP** | Automatica | Disattiva la stabilizzazione del tratto se è molto forte. |
 | **Siti web** (skribbl, Gartic…) | Automatica (o Siti web) | Stile Contorni o poco dettaglio. |
-| **Roblox** | Automatica (o Roblox e giochi) | Stile **Righe** o **Schizzo**, spessore uguale al pennello del gioco, **stabilizzatore del gioco a 0**, zoom del foglio al 100%. Nei round a tempo usa **Tempo massimo** (300 s per 5 minuti). Se il gioco va a scatti scegli *Giochi lenti o che scattano*; se non disegna niente prova **Movimento relativo**. |
+| **Roblox** | Automatica, poi **Calibra per questo gioco** | Stile **Schizzo** o **Righe**, spessore uguale al pennello del gioco, **stabilizzatore del gioco a 0**, zoom del foglio al 100%. Nei round a tempo usa **Tempo massimo** (300 s per 5 minuti). Se non disegna niente prova **Movimento relativo**. |
 
-Se il disegno perde dei pezzi o i tratti vengono uniti da righe, scegli una velocità più
-lenta (*Giochi lenti o che scattano* nei giochi, *Molto lenta* nelle altre app, o
+Se il disegno perde dei pezzi o i tratti vengono uniti da righe, nei giochi premi **Calibra
+per questo gioco**; nelle altre app scegli una velocità più lenta (*Molto lenta*, o
 *Personalizzata*: con *Passo* 0 il mouse va da un angolo all'altro come nei giochi e il
-*Ritardo* è quanto resta fermo su ogni angolo). Se l'app è stata
+*Ritardo* è quanto resta fermo dopo ogni clic e rilascio). Se l'app è stata
 avviata **come amministratore**, avvia anche Disegno come amministratore, altrimenti
 Windows blocca il mouse simulato.
 
@@ -143,14 +165,42 @@ esportarla o eliminarla. C'è anche una casella per cercarle per nome.
 Tutto resta sul tuo computer: Disegno non invia niente su Internet (si collega solo se
 incolli il link di un'immagine, per scaricarla).
 
+## Le prove
+
+Disegno è provato su una **tela di prova** (`tools/testcanvas`) che si comporta come un gioco:
+guarda il mouse una volta per fotogramma, può andare a scatti e può vedere i clic in ritardo.
+Il mouse vero viene mosso da Disegno, sotto Wine, e il risultato viene confrontato con
+l'anteprima. Alcune foto delle prove:
+
+**Un gioco che vede i clic 60 ms in ritardo.** A sinistra la versione 1.2, che dopo ogni
+rilascio ripartiva subito: il gioco disegna i salti tra un tratto e l'altro. A destra la 1.3.
+
+![Prima e dopo](docs/test/clic-visti-in-ritardo.png)
+
+**La calibrazione** sulla stessa tela: con pause corte i trattini escono uniti o incompleti,
+da 120 ms in su puliti. Disegno sceglie 144 ms.
+
+![Calibrazione](docs/test/calibrazione.png)
+
+**Anteprima e risultato**: l'esempio di Tesla in alto, a confronto con l'anteprima (manca
+l'1,3% dell'inchiostro, nessuna riga in più).
+
+![Anteprima e risultato](docs/test/anteprima-e-risultato.png)
+
+**Un gioco che scatta** (45 fps e blocchi fino a 170 ms): senza aspettare il gioco, due
+tratti restano uniti; aspettandolo, no.
+
+![Gioco che scatta](docs/test/gioco-che-scatta.png)
+
 ## Domande frequenti
 
 **Disegna nel posto sbagliato.** Riseleziona l'area: le coordinate dipendono dalla
 posizione della finestra dell'app. Se sposti o ridimensioni l'app, rifai «Seleziona area».
 
 **Nel gioco i tratti vengono uniti da righe lunghe** (il tasto sembra sempre premuto).
-Il gioco non ha fatto in tempo a vedere il rilascio del tasto: usa la velocità
-*Automatica* o *Roblox e giochi*; se succede ancora, *Giochi lenti o che scattano*.
+Il gioco vede il rilascio del tasto in ritardo e intanto il mouse era già partito: premi
+**Calibra per questo gioco**, che trova da solo la pausa giusta. In alternativa scegli
+*Giochi lenti o che scattano*.
 
 **Non disegna niente nel gioco.** Prova la velocità *Roblox e giochi* o *Molto lenta*, poi
 *Movimento relativo*. Assicurati che nel gioco sia selezionato lo strumento per disegnare.
@@ -159,8 +209,8 @@ Il gioco non ha fatto in tempo a vedere il rilascio del tasto: usa la velocità
 Disegno fino a quello vero dell'app, oppure abbassa *Ombre* o *Dettaglio*.
 
 **Ci mette troppo.** Attiva *Tempo massimo*: Disegno abbassa da solo il dettaglio per finire
-in tempo. Nei giochi lo stile *Righe* dà il risultato più dettagliato nello stesso tempo;
-*Contorni* è il più veloce. Il tempo stimato è sotto l'anteprima.
+in tempo. Nei giochi lo stile *Righe* dà tanto dettaglio nello stesso tempo; *Contorni* è il
+più veloce. Il tempo stimato è nel riepilogo sopra DISEGNA.
 
 ## Per sviluppatori
 
@@ -174,9 +224,11 @@ src/win/      app Windows: interfaccia, libreria SQLite, lettura immagini (WIC),
               overlay per scegliere l'area, disegno col mouse (SendInput)
 installer/    pacchetto MSI (WiX)
 tests/        test del motore
-tools/        preview_cli (anteprima da riga di comando; con --sim mostra cosa vedrebbe un
-              gioco a N fps con scatti), testcanvas (tela per i test, anche in modalità
-              «gioco»: un ciclo a fotogrammi con scatti configurabili)
+tools/        preview_cli (anteprima da riga di comando; con --sim e --lag mostra cosa
+              vedrebbe un gioco a N fps con scatti e clic visti in ritardo), testcanvas
+              (tela per i test, anche in modalità «gioco»: fotogrammi, scatti e ritardo
+              dei clic configurabili), capturetest (controlla la cattura dello schermo
+              usata dalla calibrazione)
 ```
 
 Compilare exe e MSI da Linux (Ubuntu):
@@ -198,3 +250,5 @@ Su Windows si può compilare con Visual Studio (CMake) o MSYS2/MinGW. La GitHub 
 
 Librerie incluse: [SQLite](https://sqlite.org) (pubblico dominio) e
 [stb_image / stb_image_write](https://github.com/nothings/stb) (pubblico dominio / MIT).
+La foto di Nikola Tesla usata negli esempi (Napoleon Sarony, circa 1890) è di pubblico
+dominio.

@@ -27,24 +27,33 @@ struct Drawing {
     float coarse = 1;        // detail reduction that was needed (1 = none)
     size_t fullCount = 0;    // strokes before cutting
     bool trimmed = false;    // strokes had to be cut to fit the time
+    float slow = 1;          // the timing may be this many times slower and still fit (spare time)
 };
 
 // Mouse timing shared by the drawing engine and the time estimate.
 //
 // With stepPx > 0 the mouse glides along each stroke in small steps, for apps that handle
-// every mouse message (Paint & co.). With stepPx <= 0 it jumps from vertex to vertex, for
-// games that look at the mouse once per frame and join what they see with straight lines:
-// every state (each vertex, the press, the pause before it) is then held for moveDelayMs /
-// downDelayMs, which must be longer than the slowest frame the drawing has to survive.
+// every mouse message (Paint & co.): downDelayMs is the pause before and after pressing,
+// upDelayMs the pause before and after releasing.
+// With stepPx <= 0 it jumps from vertex to vertex, for games that look at the mouse once
+// per frame and join what they see with straight lines. moveDelayMs is then a frame the
+// drawing must survive: the mouse rests that long on every vertex and at the start of each
+// stroke before pressing. Many games also notice a press or a release a few frames late
+// while they follow the mouse live; if the mouse left too soon they would miss the start
+// of the stroke or draw the jump to the next one. So after pressing the mouse stays still
+// for downDelayMs, and after releasing for upDelayMs.
 struct Timing {
     float stepPx = 6;        // max distance between mouse positions while pressed (0 = frame mode)
     float moveDelayMs = 2;   // pause after each move while pressed
-    float downDelayMs = 8;   // pause after reaching a stroke start and after pressing
+    float downDelayMs = 8;   // pause after pressing (and before, when stepPx > 0)
     float upDelayMs = 8;     // pause after releasing (and before, when stepPx > 0)
     bool jiggle = false;     // 1px wiggle before pressing (lets games notice the hover)
     bool sync = false;       // frame mode: after each press and release, also wait for the
                              // game window to take the input (a frozen game is waited for)
 };
+
+// The same timing with every pause `factor` times longer.
+Timing slowed(const Timing& t, float factor);
 
 // Expected wait for the game window when syncing: half a frame at 60 fps.
 constexpr float kSyncWaitMs = 8.3f;
@@ -53,8 +62,8 @@ constexpr float kSyncWaitMs = 8.3f;
 inline constexpr Timing kTimingFast{10, 1, 4, 4, false};       // Paint, Photoshop, Krita...
 inline constexpr Timing kTimingNormal{8, 4, 25, 25, false};
 inline constexpr Timing kTimingWeb{12, 8, 25, 25, false};      // drawing websites
-inline constexpr Timing kTimingGame{0, 34, 34, 4, false, true};      // games at 60 fps, even when a frame drops
-inline constexpr Timing kTimingGameSlow{0, 50, 50, 4, false, true};  // games at 30 fps, or that stutter
+inline constexpr Timing kTimingGame{0, 34, 70, 70, false, true};       // games: Roblox & co.
+inline constexpr Timing kTimingGameSlow{0, 50, 110, 110, false, true};  // slow games, or that stutter
 inline constexpr Timing kTimingSlow{3, 30, 70, 70, true};
 
 // One mouse state: the engine puts the cursor at `at`, sets the button to `down` (never both

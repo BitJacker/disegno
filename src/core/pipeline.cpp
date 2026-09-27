@@ -601,6 +601,27 @@ bool buildDrawing(const Gray& img, float areaW, float areaH, const Params& p, Dr
     return !cancelled(cancel);
 }
 
+namespace {
+
+// With time to spare, every pause may get up to this many times longer (never beyond
+// kMaxPauseMs): games notice presses, releases and corners more reliably.
+constexpr double kMaxSlow = 3.0;
+constexpr float kMaxPauseMs = 250.f;
+
+// How much slower the drawing can go and still take at most `maxSeconds`.
+float spareSlowdown(const std::vector<Stroke>& strokes, const Timing& t, double maxSeconds) {
+    if (maxSeconds <= 0 || strokes.empty()) return 1.f;
+    // The time grows linearly with the pauses: a*factor + b (b = waits that do not scale).
+    const double one = estimateSeconds(strokes, t), two = estimateSeconds(strokes, slowed(t, 2.f));
+    const double a = two - one, b = one - a;
+    if (a <= 0 || one >= maxSeconds) return 1.f;
+    const float longest = std::max({t.moveDelayMs, t.downDelayMs, t.upDelayMs, 1.f});
+    const double cap = std::min(kMaxSlow, double(kMaxPauseMs / longest));
+    return float(std::clamp((maxSeconds - b) / a, 1.0, std::max(1.0, cap)));
+}
+
+}  // namespace
+
 bool buildDrawingFor(const Gray& img, float areaW, float areaH, const Params& p, const Timing& t, double maxSeconds,
                      Drawing& out, const std::atomic<bool>* cancel) {
     auto build = [&](float coarse, Drawing& d, double& sec) {
@@ -615,7 +636,11 @@ bool buildDrawingFor(const Gray& img, float areaW, float areaH, const Params& p,
     };
     double sec = 0;
     if (!build(1.f, out, sec)) return false;
-    if (maxSeconds <= 0 || sec <= maxSeconds) return true;
+    if (maxSeconds <= 0) return true;
+    if (sec <= maxSeconds) {
+        out.slow = spareSlowdown(out.strokes, t, maxSeconds);
+        return true;
+    }
 
     // Too slow: find the least coarse version that fits (time falls as coarseness grows).
     const float maxCoarse = 16.f;
@@ -642,6 +667,7 @@ bool buildDrawingFor(const Gray& img, float areaW, float areaH, const Params& p,
             }
         }
         out = std::move(fit);
+        out.slow = spareSlowdown(out.strokes, t, maxSeconds);
         return true;
     }
     // Even the coarsest version is too slow: keep its most important strokes.

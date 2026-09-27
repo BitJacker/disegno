@@ -21,23 +21,39 @@ std::vector<Stroke> simulateFrames(const std::vector<Stroke>& strokes, const Tim
         f += dt;
     };
     bool wasDown = false;
-    auto see = [&](const Step& st) {
-        if (st.down) {
-            if (!wasDown) out.push_back(Stroke{{st.at}, 0});
-            else if (dist(out.back().pts.back(), st.at) > 0) out.back().pts.push_back(st.at);
+    auto see = [&](Pt at, bool down) {
+        if (down) {
+            if (!wasDown) out.push_back(Stroke{{at}, 0});
+            else if (dist(out.back().pts.back(), at) > 0) out.back().pts.push_back(at);
         }
-        wasDown = st.down;
+        wasDown = down;
     };
 
-    // Every frame looks at the state of that moment. A synced step starts its hold only once
-    // the game has taken it, at its next frame (the frames before it saw earlier states).
-    double now = 0;
+    // What the mouse did, to look back in time: (time, position) and (time, button) changes.
+    std::vector<std::pair<double, Pt>> moves{{-1e9, steps[0].at}};
+    std::vector<std::pair<double, bool>> buttons{{-1e9, false}};
+    auto at = [](const auto& hist, double t) {
+        auto it = std::upper_bound(hist.begin(), hist.end(), t,
+                                   [](double v, const auto& e) { return v < e.first; });
+        return std::prev(it == hist.begin() ? std::next(it) : it)->second;
+    };
+
+    // Every frame looks at the state of that moment (the button and the position possibly a
+    // little apart in time). A synced step starts its hold only once the game has taken it,
+    // at its next frame.
+    double now = 0, tb = -1e9, tp = -1e9;
     for (const Step& st : steps) {
         now += 0.05;  // same event cost as the time estimate
+        if (dist(st.at, moves.back().second) > 0) moves.push_back({now, st.at});
+        if (st.down != buttons.back().second) buttons.push_back({now, st.down});
         const double from = st.sync && fm.pumps ? std::max(now, f) : now;
         const double end = from + st.ms;
         while (f < end) {
-            see(st);
+            // A delay line: each frame sees things between half and all of the lag late,
+            // never older than what the previous frame saw.
+            tb = std::max(tb, f - fm.buttonLag * frame * (0.5 + 0.5 * uni(rng)));
+            tp = std::max(tp, f - fm.posLag * frame * (0.5 + 0.5 * uni(rng)));
+            see(at(moves, tp), at(buttons, tb));
             nextFrame();
         }
         now = end;

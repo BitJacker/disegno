@@ -4,7 +4,8 @@
 //   preview_cli input.jpg output.png [--area 800x600] [--style 0-4] [--detail 1-10]
 //               [--shading 0-10] [--brush px] [--invert] [--stretch] [--upto N]
 //               [--timing fast|normal|web|game|gameslow|slow] [--limit seconds]
-//               [--frame ms] [--up ms] [--sim fps[,jitter[,hitch]]] [--seed n]
+//               [--frame ms] [--up ms] [--sim fps[,jitter[,hitch[,frames]]]] [--seed n]
+//               [--lag buttonFrames,posFrames] [--nosync] [--nopump]
 // With --sim the output shows what a game reading the mouse once per frame would draw,
 // and the differences from the intended drawing are printed.
 
@@ -60,6 +61,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--nosync") nosync = true;
         else if (a == "--nopump") fm.pumps = false;
+        else if (a == "--lag") std::sscanf(next(), "%lf,%lf", &fm.buttonLag, &fm.posLag);
     }
 
     int w, h, n;

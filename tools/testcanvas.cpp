@@ -1,13 +1,15 @@
 // Minimal "Paint"-like canvas for automated tests: draws 1px black lines while the left
 // button is held, and saves the canvas as a BMP once a second (and on exit).
 //
-//   testcanvas.exe out.bmp [x y width height [poll[:fps[:jitter[:hitch[:frames]]]]|events] [title]]
+//   testcanvas.exe out.bmp [x y width height [poll[:fps[:jitter[:hitch[:frames[:lag]]]]]|events] [title]]
 // Writes the client area position to out.bmp.txt as "left top width height".
 // With "poll" it behaves like a game (e.g. Roblox): a loop that, once per frame (60 fps
 // unless given), takes the window messages, looks at the cursor and the button, and joins
 // the positions it sees while the button is down. `jitter` makes every frame up to that
 // fraction longer and `hitch` is the chance of a frame 1..`frames` frames late (2 unless
 // given), like a game that stutters; meanwhile no message is taken, as in a real game.
+// `lag` (ms) makes the game notice presses and releases that much later while it follows the
+// mouse live, as many games do: moving away too soon after a release draws the jump.
 // Every frame is logged to out.bmp.frames ("ms x y down").
 #ifndef UNICODE
 #define UNICODE
@@ -19,8 +21,10 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstddef>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -34,8 +38,9 @@ std::wstring g_out = L"canvas.bmp";
 long g_moves = 0, g_presses = 0;
 bool g_poll = false;
 bool g_pollDown = false;
-double g_fps = 60, g_jitter = 0, g_hitch = 0;
+double g_fps = 60, g_jitter = 0, g_hitch = 0, g_lag = 0;
 int g_hitchFrames = 2;
+std::vector<std::pair<double, bool>> g_buttons;  // button state seen at each frame (for the lag)
 
 // Frames seen by the game loop (poll mode).
 struct Frame {
@@ -119,6 +124,14 @@ void gameFrame(HWND hwnd) {
     GetCursorPos(&fr.p);
     ScreenToClient(hwnd, &fr.p);
     fr.down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (g_lag > 0) {
+        // The state of `lag` ms ago; the position stays live.
+        g_buttons.push_back({fr.ms, fr.down});
+        size_t k = 0;
+        while (k + 1 < g_buttons.size() && g_buttons[k + 1].first <= fr.ms - g_lag) ++k;
+        fr.down = g_buttons[k].second;
+        g_buttons.erase(g_buttons.begin(), g_buttons.begin() + std::ptrdiff_t(k));
+    }
     if (!g_frames.empty()) {
         const double gap = fr.ms - g_frames.back().ms;
         g_sumGap += gap;
@@ -219,7 +232,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     }
     if (argc > 6 && _wcsnicmp(argv[6], L"poll", 4) == 0) {
         g_poll = true;
-        swscanf(argv[6] + 4, L":%lf:%lf:%lf:%d", &g_fps, &g_jitter, &g_hitch, &g_hitchFrames);
+        swscanf(argv[6] + 4, L":%lf:%lf:%lf:%d:%lf", &g_fps, &g_jitter, &g_hitch, &g_hitchFrames, &g_lag);
         if (g_fps < 1) g_fps = 60;
         if (g_hitchFrames < 1) g_hitchFrames = 1;
     }

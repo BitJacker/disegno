@@ -41,7 +41,8 @@ bool buildDrawing(const Gray& img, float areaW, float areaH, const Params& p, Dr
 // Builds the drawing for a given mouse timing: strokes are prepared for that timing and,
 // when `maxSeconds` > 0, the level of detail is lowered just enough to finish in time
 // (strokes are cut only if even the coarsest version is too slow). Drawing::coarse,
-// ::fullCount and ::trimmed tell what was done.
+// ::fullCount and ::trimmed tell what was done. With time to spare, Drawing::slow tells how
+// much slower (and safer) the timing can go while still finishing in time.
 bool buildDrawingFor(const Gray& img, float areaW, float areaH, const Params& p, const Timing& t, double maxSeconds,
                      Drawing& out, const std::atomic<bool>* cancel = nullptr);
 

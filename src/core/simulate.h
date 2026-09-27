@@ -17,6 +17,12 @@ struct FrameModel {
     double hitch = 0;    // chance that a frame is late by 1..hitchFrames whole frames
     int hitchFrames = 2;
     bool pumps = true;   // the game takes window messages once per frame, so a sync waits for it
+    // Many games get the button from events but read the mouse position live, later in the
+    // frame (or the other way round): the button state they use can be up to buttonLag
+    // frames older than the position, and the position up to posLag frames older than the
+    // button.
+    double buttonLag = 0;
+    double posLag = 0;
     uint32_t seed = 1;
 };
 

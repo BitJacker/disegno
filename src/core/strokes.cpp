@@ -224,12 +224,21 @@ void prepareForTiming(std::vector<Stroke>& strokes, const Timing& t) {
     for (Stroke& s : strokes) simplify(s.pts, 0.9f);
 }
 
+Timing slowed(const Timing& t, float factor) {
+    Timing s = t;
+    s.moveDelayMs *= factor;
+    s.downDelayMs *= factor;
+    s.upDelayMs *= factor;
+    return s;
+}
+
 void planStroke(const Stroke& s, const Timing& t, std::vector<Step>& out) {
     const auto& p = s.pts;
     if (p.empty()) return;
     const bool frames = t.stepPx <= 0;
     const Pt start = p[0];
-    out.push_back({start, false, t.downDelayMs});  // travel, then let the app see where we are
+    // Travel, then let the app see where we are before pressing.
+    out.push_back({start, false, frames ? t.moveDelayMs : t.downDelayMs});
     if (t.jiggle) {
         out.push_back({{start.x + 1, start.y}, false, std::max(1.f, t.moveDelayMs)});
         out.push_back({start, false, std::max(1.f, t.moveDelayMs)});

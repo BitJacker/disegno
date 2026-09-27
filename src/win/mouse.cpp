@@ -196,8 +196,14 @@ DWORD WINAPI worker(LPVOID arg) {
         return true;
     };
 
+    bool go = true;
+    if (job->hasLead) {
+        inj.move(job->lead);
+        waitMs(job->leadMs);
+        go = poll();
+    }
     std::vector<dz::Step> steps;
-    for (int si = 0; si < total; ++si) {
+    for (int si = 0; go && si < total; ++si) {
         steps.clear();
         dz::planStroke(job->strokes[size_t(si)], t, steps);
         bool ok = true;
@@ -222,6 +228,7 @@ DWORD WINAPI worker(LPVOID arg) {
         }
     }
     if (inj.isDown()) inj.press(false);
+    if (job->tailMs > 0 && result == DrawResult::Completed) waitMs(job->tailMs);
     timeEndPeriod(1);
     g_running = false;
     PostMessageW(notify, WM_APP_DRAW_DONE, WPARAM(result), LPARAM(done));

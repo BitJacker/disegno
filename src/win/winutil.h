@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Private window messages.
 enum : UINT {
@@ -60,5 +61,9 @@ std::wstring nowStamp();                       // "26/09/2026 22:10"
 
 bool readFile(const std::wstring& path, std::string& out);
 bool writeFile(const std::wstring& path, const void* data, size_t size);
+
+// What the screen shows inside `r` (screen pixels), row by row from the top, 32 bits per
+// pixel. Empty on failure.
+std::vector<uint32_t> captureScreen(const RECT& r);
 
 }  // namespace wu

@@ -166,4 +166,34 @@ bool writeFile(const std::wstring& path, const void* data, size_t size) {
     return ok;
 }
 
+std::vector<uint32_t> captureScreen(const RECT& r) {
+    const int w = r.right - r.left, h = r.bottom - r.top;
+    std::vector<uint32_t> px;
+    if (w <= 0 || h <= 0) return px;
+    HDC screen = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(screen);
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;  // top-down
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (dib && bits) {
+        HGDIOBJ old = SelectObject(mem, dib);
+        if (BitBlt(mem, 0, 0, w, h, screen, r.left, r.top, SRCCOPY | CAPTUREBLT)) {
+            GdiFlush();
+            const auto* p = static_cast<const uint32_t*>(bits);
+            px.assign(p, p + size_t(w) * size_t(h));
+        }
+        SelectObject(mem, old);
+    }
+    if (dib) DeleteObject(dib);
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return px;
+}
+
 }  // namespace wu

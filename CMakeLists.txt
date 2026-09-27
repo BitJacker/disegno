@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Disegno VERSION 1.2.0 LANGUAGES C CXX)
+project(Disegno VERSION 1.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,7 +13,8 @@ add_library(dzcore STATIC
   src/core/strokes.cpp
   src/core/pipeline.cpp
   src/core/render.cpp
-  src/core/simulate.cpp)
+  src/core/simulate.cpp
+  src/core/calibrate.cpp)
 target_include_directories(dzcore PUBLIC src)
 
 if(WIN32)
@@ -57,6 +58,14 @@ if(WIN32)
   target_link_libraries(testcanvas PRIVATE winmm)
   if(MINGW)
     target_link_options(testcanvas PRIVATE -municode -static -static-libgcc -static-libstdc++ -s)
+  endif()
+
+  # Saves a screen rectangle with the app's capture code (checks calibration's screen capture).
+  add_executable(capturetest WIN32 tools/capturetest.cpp src/win/winutil.cpp)
+  target_compile_definitions(capturetest PRIVATE UNICODE _UNICODE NOMINMAX)
+  target_link_libraries(capturetest PRIVATE shell32 gdi32 user32 ole32 shlwapi)
+  if(MINGW)
+    target_link_options(capturetest PRIVATE -municode -static -static-libgcc -static-libstdc++ -s)
   endif()
 else()
   # Desktop tools: render what the app would draw into a PNG.
